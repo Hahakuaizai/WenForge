@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -150,6 +152,8 @@ fun ShelfScreen(
     var currentBook by remember { mutableStateOf<ShelfItem?>(null) }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
     var showFilter by remember { mutableStateOf(false) }
+    // 批量管理
+    var manageOpen by remember { mutableStateOf(false) }
 
     val novels = vm.data.projects.map {
         ShelfItem(
@@ -265,6 +269,26 @@ fun ShelfScreen(
                             Icon(
                                 Icons.Default.Edit,
                                 contentDescription = "编辑这本书",
+                                modifier = Modifier.size(17.dp),
+                                tint = InkBlack
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        val msrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                        Box(
+                            Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(Color.White)
+                                .pressScale(msrc, 0.9f)
+                                .clickable(interactionSource = msrc, indication = null) {
+                                    manageOpen = true
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "批量管理",
                                 modifier = Modifier.size(17.dp),
                                 tint = InkBlack
                             )
@@ -664,6 +688,198 @@ fun ShelfScreen(
                 TextButton(onClick = { pendingDelete = null }) { Text("取消", color = InkBlack) }
             }
         )
+    }
+
+    // ——— 批量管理：勾选多本一起删 ———
+    if (manageOpen) {
+        ShelfManageSheet(
+            allItems = shown,
+            onDismiss = { manageOpen = false },
+            onDelete = { picked ->
+                vm.deleteBooks(picked.map { it.kind to it.id })
+                manageOpen = false
+            }
+        )
+    }
+}
+
+/**
+ * 批量管理面板：列出当前筛选下的所有书，勾选后一起删。
+ */
+@Composable
+private fun ShelfManageSheet(
+    allItems: List<ShelfItem>,
+    onDismiss: () -> Unit,
+    onDelete: (List<ShelfItem>) -> Unit
+) {
+    val picked = remember { mutableStateListOf<String>() }
+    var confirm by remember { mutableStateOf(false) }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .clip(RoundedCornerShape(24.dp))
+                .background(PaperWhite)
+                .padding(horizontal = 18.dp, vertical = 18.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "批量管理",
+                        style = TextStyle(fontSize = 19.sp, fontWeight = FontWeight.Bold, color = InkBlack)
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "已选 ${picked.size} / ${allItems.size} 本",
+                        style = TextStyle(fontSize = 11.5.sp, color = InkGray)
+                    )
+                }
+                TextButton(onClick = onDismiss) { Text("关闭", color = InkGray) }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BulkChip(if (picked.size == allItems.size && allItems.isNotEmpty()) "取消全选" else "全选") {
+                    if (picked.size == allItems.size && allItems.isNotEmpty()) picked.clear()
+                    else {
+                        picked.clear()
+                        picked.addAll(allItems.map { it.id })
+                    }
+                }
+                BulkChip("只选导入") {
+                    picked.clear()
+                    picked.addAll(allItems.filter { it.kind == "imported" && it.origin != "crawl" }.map { it.id })
+                }
+                BulkChip("只选网文") {
+                    picked.clear()
+                    picked.addAll(allItems.filter { it.origin == "crawl" }.map { it.id })
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            LazyColumn(
+                Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(allItems, key = { it.kind + "_" + it.id }) { it ->
+                    val on = it.id in picked
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (on) Color(0xFFF4F1EA) else Color.White)
+                            .clickable {
+                                if (on) picked.remove(it.id) else picked.add(it.id)
+                            }
+                            .padding(horizontal = 13.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(19.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (on) InkBlack else Color(0xFFE8E6E0)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (on) Text("✓", style = TextStyle(fontSize = 12.sp, color = Color.White))
+                        }
+                        Spacer(Modifier.width(11.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                it.title.ifBlank { "未命名" },
+                                style = TextStyle(fontSize = 14.sp, color = InkBlack, fontWeight = FontWeight.Medium),
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                buildString {
+                                    append(
+                                        when {
+                                            it.kind == "novel" -> "我写的"
+                                            it.origin == "crawl" -> "网文"
+                                            else -> "导入"
+                                        }
+                                    )
+                                    append(" · ${it.chapters} 章 · ${com.novelforge.app.data.WordCount.label(it.words)}")
+                                },
+                                style = TextStyle(fontSize = 11.sp, color = InkGray)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (picked.isEmpty()) Color(0xFFE8E6E0) else Color(0xFFB4402F))
+                    .clickable(enabled = picked.isNotEmpty()) { confirm = true }
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (picked.isEmpty()) "选几本再删" else "删除选中的 ${picked.size} 本",
+                    style = TextStyle(
+                        fontSize = 14.5.sp,
+                        color = if (picked.isEmpty()) InkGray else Color.White,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+            }
+        }
+    }
+
+    if (confirm) {
+        val victims = allItems.filter { it.id in picked }
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = {
+                Text(
+                    "删掉 ${victims.size} 本？",
+                    style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, color = InkBlack)
+                )
+            },
+            text = {
+                Text(
+                    buildString {
+                        append(victims.take(4).joinToString("、") { "《${it.title.ifBlank { "未命名" }}》" })
+                        if (victims.size > 4) append(" 等")
+                        append("\n\n正文和章节都会一起删掉，删了找不回来。")
+                    },
+                    style = TextStyle(fontSize = 12.sp, color = InkGray, lineHeight = 18.sp)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = false
+                    onDelete(victims)
+                }) { Text("删除", color = Color(0xFFB4402F)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirm = false }) { Text("取消", color = InkBlack) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun BulkChip(label: String, onTap: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White)
+            .border(1.dp, HairLine, RoundedCornerShape(12.dp))
+            .clickable(onClick = onTap)
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+    ) {
+        Text(label, style = TextStyle(fontSize = 12.sp, color = InkBlack))
     }
 }
 

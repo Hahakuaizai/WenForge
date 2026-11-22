@@ -239,6 +239,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    /** 批量删除书架上的书（novel = 自己写的，imported = 导入/下载的） */
+    fun deleteBooks(items: List<Pair<String, String>>) {
+        items.forEach { (kind, id) ->
+            when (kind) {
+                "novel" -> store.data.projects.removeAll { it.id == id }
+                else -> store.data.importedBooks.removeAll { it.id == id }
+            }
+        }
+        store.save()
+        refresh()
+    }
+
     /** 改作品的基本信息（书名、题材、主角等） */
     fun updateProjectInfo(p: NovelProject) {
         p.updatedAt = System.currentTimeMillis()
