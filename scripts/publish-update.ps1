@@ -25,30 +25,25 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Find-Root {
-    # 脚本在 <root>/开发文件/scripts。项目根 = 有 安装包 或 update 目录的那层
-    # （开发文件/ 里也有 novel_dev，所以不能只看 novel_dev）
+    # 脚本在 <root>/开发文件/novel_dev/scripts。项目根 = 有 安装包 或 update 的那层
     $d = $PSScriptRoot
-    for ($i = 0; $i -lt 5; $i++) {
-        if ((Test-Path (Join-Path $d "安装包")) -or (Test-Path (Join-Path $d "update"))) {
-            return $d
-        }
+    for ($i = 0; $i -lt 6; $i++) {
+        if ((Test-Path (Join-Path $d "安装包")) -or (Test-Path (Join-Path $d "update"))) { return $d }
         $d = Split-Path -Parent $d
         if (-not $d) { break }
     }
-    # 兜底：开发文件 的上一层
-    $p = Split-Path -Parent $PSScriptRoot
-    if ((Split-Path -Leaf $p) -eq "开发文件") { return (Split-Path -Parent $p) }
-    return $p
+    return (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 }
 
 function Find-Project {
-    # novel_dev 可能在 <root>/novel_dev 或 <root>/开发文件/novel_dev
+    # 本项目就在 <root>/开发文件/novel_dev 或 <root>/novel_dev
     param([string]$Root)
-    $a = Join-Path $Root "novel_dev"
-    if (Test-Path (Join-Path $a "gradlew.bat")) { return $a }
-    $b = Join-Path $Root (Join-Path "开发文件" "novel_dev")
+    $a = Join-Path $Root "开发文件"
+    $b = Join-Path $a "novel_dev"
     if (Test-Path (Join-Path $b "gradlew.bat")) { return $b }
-    return $a
+    $c = Join-Path $Root "novel_dev"
+    if (Test-Path (Join-Path $c "gradlew.bat")) { return $c }
+    return (Split-Path -Parent $PSScriptRoot)
 }
 # git 输出是 UTF-8，控制台默认按 GBK 解，会把中文提交说明弄成乱码
 try {
