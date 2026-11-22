@@ -71,6 +71,59 @@ object UpdateClient {
     }
 
     /** 下载 apk 到 cache/updates */
+    /**
+     * GitHub Release 的附件直链在国内经常连不上：
+     * github.com 返回 302，跳转到 objects.githubusercontent.com，然后卡死超时。
+     * 所以按顺序试几个加速镜像，哪个能下完整就用哪个。
+     */
+    private val ghMirrors = listOf(
+        "https://ghfast.top/",
+        "https://gh-proxy.com/",
+        "https://ghproxy.net/",
+        "https://mirror.ghproxy.com/"
+    )
+
+    /** 把 GitHub 原始链接套上镜像前缀 */
+    private fun viaMirror(mirror: String, url: String) = mirror.trimEnd('/') + "/" + url
+
+    /** 下载一个 URL 到 out，返回是否成功（失败会删掉半截文件） */
+    private suspend fun tryFetch(
+        url: String,
+        out: File,
+        expectSize: Long,
+        expectSha: String,
+        onProgress: (Float) -> Unit
+    ): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val resp = http.newCall(Request.Builder().url(url).build()).execute()
+            if (!resp.isSuccessful) return@runCatching false
+            val body = resp.body ?: return@runCatching false
+            val total = body.contentLength()
+            body.byteStream().use { input ->
+                out.outputStream().use { output ->
+                    val buf = ByteArray(64 * 1024)
+                    var read: Int
+                    var done = 0L
+                    while (input.read(buf).also { read = it } > 0) {
+                        output.write(buf, 0, read)
+                        done += read
+                        if (total > 0) onProgress(done.toFloat() / total)
+                    }
+                }
+            }
+            if (out.length() < 1024 * 100) return@runCatching false
+            if (expectSize > 0 && out.length() != expectSize) return@runCatching false
+            if (expectSha.isNotBlank() &&
+                !sha256Of(out).equals(expectSha, ignoreCase = true)
+            ) return@runCatching false
+            true
+        }.getOrElse {
+            false
+        }.also { ok ->
+            if (!ok) out.delete()
+        }
+    }
+
     suspend fun download(
         serverUrl: String,
         entry: UpdateEntry,
@@ -79,38 +132,25 @@ object UpdateClient {
     ): File = withContext(Dispatchers.IO) {
         val dir = File(ctx.cacheDir, "updates").apply { mkdirs() }
         val out = File(dir, entry.file.ifBlank { "update-${entry.versionName}.apk" })
-        val url = entry.directUrl.ifBlank { base(serverUrl) + "/" + entry.file }
-        val resp = http.newCall(Request.Builder().url(url).build()).execute()
-        if (!resp.isSuccessful) error("下载失败：HTTP ${resp.code}")
-        val body = resp.body ?: error("空响应")
-        val total = body.contentLength()
-        body.byteStream().use { input ->
-            out.outputStream().use { output ->
-                val buf = ByteArray(64 * 1024)
-                var read: Int
-                var done = 0L
-                while (input.read(buf).also { read = it } > 0) {
-                    output.write(buf, 0, read)
-                    done += read
-                    if (total > 0) onProgress(done.toFloat() / total)
-                }
-            }
+
+        // 局域网 / 自建服务器：直接拼地址，不走镜像
+        val isGithub = entry.directUrl.contains("github.com") ||
+            entry.directUrl.contains("githubusercontent.com")
+        val candidates = when {
+            entry.directUrl.isBlank() ->
+                listOf(base(serverUrl) + "/" + entry.file)
+            !isGithub ->
+                listOf(entry.directUrl)
+            else ->
+                // GitHub 附件：先直连（有代理/VPN 时最快），再逐个镜像
+                listOf(entry.directUrl) + ghMirrors.map { viaMirror(it, entry.directUrl) }
         }
-        if (out.length() < 1024 * 100) error("下载的文件只有 ${out.length()} 字节，应该不是 APK")
-        // 完整性校验：大小对不上或 SHA-256 对不上，多半是局域网传坏了，删掉重下
-        if (entry.size > 0 && out.length() != entry.size) {
-            val got = out.length()
-            out.delete()
-            error("下载不完整：大小对不上（$got / ${entry.size}），再试一次")
+
+        for ((i, url) in candidates.withIndex()) {
+            val ok = tryFetch(url, out, entry.size, entry.sha256, onProgress)
+            if (ok) return@withContext out
         }
-        if (entry.sha256.isNotBlank()) {
-            val actual = sha256Of(out)
-            if (!actual.equals(entry.sha256, ignoreCase = true)) {
-                out.delete()
-                error("下载校验没过（SHA-256 对不上），可能是网络传坏了，再试一次")
-            }
-        }
-        out
+        error("下载失败：直连和 ${ghMirrors.size} 个加速镜像都没成功，检查下网络")
     }
 
     private fun sha256Of(file: File): String {
