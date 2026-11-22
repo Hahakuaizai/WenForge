@@ -25,7 +25,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Find-Root {
-    # 脚本在 <root>/开发文件/novel_dev/scripts。项目根 = 有 安装包 或 update 的那层
+    # 脚本在 <root>/novel_dev/scripts。项目根 = 有 update 目录的那层
     $d = $PSScriptRoot
     for ($i = 0; $i -lt 6; $i++) {
         if ((Test-Path (Join-Path $d "安装包")) -or (Test-Path (Join-Path $d "update"))) { return $d }
@@ -36,7 +36,7 @@ function Find-Root {
 }
 
 function Find-Project {
-    # 本项目就在 <root>/开发文件/novel_dev 或 <root>/novel_dev
+    # novel_dev 在 <root>/novel_dev（也兼容旧的 <root>/开发文件/novel_dev）
     param([string]$Root)
     $a = Join-Path $Root "开发文件"
     $b = Join-Path $a "novel_dev"
