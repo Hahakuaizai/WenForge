@@ -1216,11 +1216,11 @@ private fun BookCarousel(
                         val (x, y) = bookOrigin(i, pos, enter.value)
                         translationX = x
                         translationY = y
-                        // 关键：把这本书提升成独立的硬件图层（离屏纹理）。
-                        // 内容画一次就缓存进纹理，滑动时只改 translationX/Y 移动纹理，
-                        // 不再每帧重跑封面那套绘制。这就是 Flutter 版 RepaintBoundary
-                        // 在 Compose 里的等价物。
-                        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                        // 不要用 Offscreen：它会按 Box 尺寸建纹理，而书的内容
+                        // （顶面斜出的角、封面左上的投影）会超出 Box 边界，
+                        // 超出的部分直接被裁成一条直线，立体感全没了。
+                        // graphicsLayer 本身已经会把这块合成到一个图层，
+                        // 位置变化只改 translation，不会重跑内容绘制。
                     }
             ) {
                 // key() 隔离：书的内容跟 pos 无关，滑动时 Compose 会跳过这棵子树的重组
