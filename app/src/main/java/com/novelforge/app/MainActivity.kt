@@ -8,6 +8,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -43,6 +51,36 @@ class MainActivity : ComponentActivity() {
                     Surface(color = MaterialTheme.colorScheme.background) {
                     val vm: AppViewModel = viewModel()
                     val nav = rememberNavController()
+
+                    // 启动自动检查更新（静默：连不上电脑就当无事发生，有新版才弹一次）
+                    LaunchedEffect(Unit) {
+                        vm.checkUpdates(silent = true)
+                    }
+                    var updatePromptOff by remember { mutableStateOf(false) }
+                    val latestEntry = vm.updateEntries.firstOrNull()
+                    if (vm.updateAvailable && !updatePromptOff && latestEntry != null) {
+                        AlertDialog(
+                            onDismissRequest = { updatePromptOff = true },
+                            title = { Text("有新版本 v${latestEntry.versionName}") },
+                            text = {
+                                Text(
+                                    latestEntry.notes.firstOrNull()
+                                        ?: "电脑上有新版本，去更新页看看这次改了什么。"
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    updatePromptOff = true
+                                    nav.navigate("updates")
+                                }) { Text("去更新") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { updatePromptOff = true }) {
+                                    Text("稍后")
+                                }
+                            }
+                        )
+                    }
                     NavHost(
                         navController = nav,
                         startDestination = "main",

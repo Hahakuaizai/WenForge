@@ -22,7 +22,9 @@ data class UpdateEntry(
     val time: String,
     val notes: List<String>,
     val file: String,
-    val size: Long
+    val size: Long,
+    /** APK 的 SHA-256（新版电脑端脚本会带上；旧 manifest 没有就为空，跳过校验） */
+    val sha256: String = ""
 )
 
 object UpdateClient {
@@ -58,7 +60,8 @@ object UpdateClient {
                     time = o.optString("time"),
                     notes = notes,
                     file = o.optString("file"),
-                    size = o.optLong("size")
+                    size = o.optLong("size"),
+                    sha256 = o.optString("sha256")
                 )
             )
         }
@@ -92,7 +95,30 @@ object UpdateClient {
             }
         }
         if (out.length() < 1024 * 100) error("下载的文件只有 ${out.length()} 字节，应该不是 APK")
+        // 完整性校验：大小对不上或 SHA-256 对不上，多半是局域网传坏了，删掉重下
+        if (entry.size > 0 && out.length() != entry.size) {
+            val got = out.length()
+            out.delete()
+            error("下载不完整：大小对不上（$got / ${entry.size}），再试一次")
+        }
+        if (entry.sha256.isNotBlank()) {
+            val actual = sha256Of(out)
+            if (!actual.equals(entry.sha256, ignoreCase = true)) {
+                out.delete()
+                error("下载校验没过（SHA-256 对不上），可能是网络传坏了，再试一次")
+            }
+        }
         out
+    }
+
+    private fun sha256Of(file: File): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            var read: Int
+            while (input.read(buf).also { read = it } > 0) md.update(buf, 0, read)
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     /** 交给系统安装 */
@@ -130,6 +156,12 @@ object UpdateClient {
         return info.versionName.orEmpty() to code
     }
 
+    /** 探测共用一个短超时客户端（旧写法给 254 个地址各建一个 OkHttpClient，太浪费） */
+    private val probeHttp = OkHttpClient.Builder()
+        .connectTimeout(260, TimeUnit.MILLISECONDS)
+        .readTimeout(400, TimeUnit.MILLISECONDS)
+        .build()
+
     /** 扫局域网找 8787 端口上的更新服务 */
     suspend fun scanLan(port: Int = 8787): String? = withContext(Dispatchers.IO) {
         val prefix = localPrefix() ?: return@withContext null
@@ -137,19 +169,25 @@ object UpdateClient {
             val jobs = (1..254).map { host ->
                 async {
                     val candidate = "http://$prefix.$host:$port"
-                    val probe = OkHttpClient.Builder()
-                        .connectTimeout(260, TimeUnit.MILLISECONDS)
-                        .readTimeout(400, TimeUnit.MILLISECONDS)
-                        .build()
-                    val ok = runCatching {
-                        probe.newCall(Request.Builder().url("$candidate/manifest.json").build())
-                            .execute().use { it.isSuccessful }
-                    }.getOrDefault(false)
-                    if (ok) candidate else null
+                    if (isUpdateServer(candidate)) candidate else null
                 }
             }
             jobs.awaitAll().firstOrNull { it != null }
         }
+    }
+
+    /** 是不是文枢的更新服务：先认 /ping 的身份，对不上再看 manifest（兼容旧版电脑脚本） */
+    private fun isUpdateServer(base: String): Boolean {
+        val ping = runCatching {
+            probeHttp.newCall(Request.Builder().url("$base/ping").build()).execute().use { resp ->
+                resp.isSuccessful && (resp.body?.string()?.contains("wenforge") == true)
+            }
+        }.getOrDefault(false)
+        if (ping) return true
+        return runCatching {
+            probeHttp.newCall(Request.Builder().url("$base/manifest.json").build())
+                .execute().use { it.isSuccessful }
+        }.getOrDefault(false)
     }
 
     private fun localPrefix(): String? {

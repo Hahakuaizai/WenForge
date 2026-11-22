@@ -743,6 +743,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var updateProgress by mutableStateOf(0f)
         private set
 
+    /** 启动时静默检查发现的新版本（主界面弹一次提示用） */
+    var updateAvailable by mutableStateOf(false)
+        private set
+
     fun currentVersion(): Pair<String, Int> = UpdateClient.installedVersion(getApplication())
 
     fun setUpdateServer(url: String) {
@@ -751,11 +755,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         data = store.data
     }
 
-    /** 检查更新：拉 manifest，顺手把记录存进设置（只留 10 条） */
-    fun checkUpdates() {
+    /** 检查更新：拉 manifest，顺手把记录存进设置（只留 10 条）。
+     *  silent=true 是启动时的自动检查：不打扰、不写状态文字，连不上就当无事发生，
+     *  只在确实有新版本时把 updateAvailable 置真，主界面会弹一次提示。 */
+    fun checkUpdates(silent: Boolean = false) {
         val url = store.data.settings.updateServerUrl.ifBlank { "http://127.0.0.1:8787" }
-        updateChecking = true
-        updateStatus = "正在连 ${url} …"
+        if (!silent) {
+            updateChecking = true
+            updateStatus = "正在连 ${url} …"
+        }
         viewModelScope.launch {
             runCatching { UpdateClient.fetch(url) }.fold(
                 onSuccess = { list ->
@@ -773,15 +781,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     store.save()
                     data = store.data
-                    updateStatus = when {
-                        latest == null -> "服务器上还没有版本"
-                        latest.versionCode > code -> "有新版本 ${latest.versionName}（当前 $name）"
-                        else -> "已经是最新的 $name"
+                    updateAvailable = latest != null && latest.versionCode > code
+                    if (!silent) {
+                        updateStatus = when {
+                            latest == null -> "服务器上还没有版本"
+                            latest.versionCode > code -> "有新版本 ${latest.versionName}（当前 $name）"
+                            else -> "已经是最新的 $name"
+                        }
                     }
                 },
-                onFailure = { updateStatus = "❌ ${it.message}" }
+                onFailure = { if (!silent) updateStatus = "❌ ${it.message}" }
             )
-            updateChecking = false
+            if (!silent) updateChecking = false
         }
     }
 

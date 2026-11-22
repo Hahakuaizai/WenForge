@@ -786,7 +786,7 @@ private fun BookCarousel(
             return c * c
         }
 
-        fun railY(d: Float): Float = (d * 2.5f + d * d * 0.45f).coerceIn(-24f, 56f)
+        fun railY(d: Float): Float = (d * 2.5f + d * d * 0.45f).coerceIn(-24f, 56f) * density.density
 
         /** 第 i 本书左上角的坐标（渲染和命中测试共用同一套数学） */
         fun bookOrigin(i: Int, p: Float, enterV: Float): Pair<Float, Float> {
@@ -904,11 +904,41 @@ private fun BookCarousel(
                 }
         )
 
-        // 画书：远的先画（遮挡顺序按 |d| 降序）
-        val enterV = enter.value
-        val order = books.indices.sortedByDescending {
-            kotlin.math.abs(relOfStatic(it, pos, n))
+        // 地板软阴影：留在未抽出的基座位置（原作同款，书抽出来影子不动）
+        val densF = density.density
+        Canvas(Modifier.fillMaxSize()) {
+            val dxs = cover * 0.66f
+            val dys = cover * -0.30f
+            val ink = Color(0xFF2B2822)
+            for (i in books.indices) {
+                val d = relOfStatic(i, pos, n)
+                if (kotlin.math.abs(d) > 6.2f) continue
+                val sx = startX + d * pitch
+                val sy = baseY + railY(d) + H
+                val shadow = Path().apply {
+                    moveTo(sx, sy)
+                    lineTo(sx + spine, sy + 1.4f * densF)
+                    lineTo(sx + spine + dxs, sy + 1.4f * densF + dys)
+                    lineTo(sx + dxs, sy + dys)
+                    lineTo(sx + dxs - 10f * densF, sy + dys + 10f * densF)
+                    lineTo(sx - 10f * densF, sy + 10f * densF)
+                    close()
+                }
+                drawPath(
+                    shadow,
+                    Brush.linearGradient(
+                        listOf(ink.copy(alpha = 0.10f), ink.copy(alpha = 0f)),
+                        start = Offset(sx, sy),
+                        end = Offset(sx + dxs, sy + dys)
+                    )
+                )
+            }
         }
+
+        // 画书：按从左到右的顺序（原作的固定绘制序：右边的书压住左边书的封面右缘，
+        // 每本书的书脊都露在外面；中心书不靠置顶，靠抽出位移自己站出来）
+        val enterV = enter.value
+        val order = books.indices.sortedBy { relOfStatic(it, pos, n) }
         order.forEach { i ->
             val d = relOfStatic(i, pos, n)
             if (kotlin.math.abs(d) > 6.2f) return@forEach
