@@ -236,6 +236,10 @@ data class ImportedBook(
     var pendingChapters: List<PendingChapter> = emptyList(),
     /** 书源 id（qqxs / qbtr / generic） */
     var sourceId: String = "",
+    /** 来源文件名（导入本地文件时记下，重复检测用） */
+    var sourceName: String = "",
+    /** 内容指纹：章节标题+字数算出来的短哈希，判断是不是同一本书 */
+    var fingerprint: String = "",
     val createdAt: Long = System.currentTimeMillis()
 ) {
     val totalWords: Int get() = chapters.sumOf { it.content.length }

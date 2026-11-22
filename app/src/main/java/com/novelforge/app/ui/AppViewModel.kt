@@ -645,21 +645,110 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         importStatus = ""
     }
 
-    /** 导入本地 txt / md 文件 */
-    fun importLocalBook(
+    /** 导入时的重复处理方式 */
+    enum class DupMode { REPLACE, SKIP, KEEP_BOTH }
+
+    /** 查一下这本书书架上有没有。没有重复返回 null */
+    fun findDuplicate(
         parsed: com.novelforge.app.data.BookParser.Parsed,
-        titleOverride: String = ""
+        titleOverride: String,
+        sourceName: String
+    ): Pair<com.novelforge.app.data.DuplicateFinder.Verdict, String>? {
+        val fp = com.novelforge.app.data.DuplicateFinder.fingerprintOf(parsed.chapters)
+        val wanted = titleOverride.ifBlank { parsed.title }.ifBlank { "未命名" }
+        val dup = com.novelforge.app.data.DuplicateFinder.find(
+            books = store.data.importedBooks,
+            incomingTitle = wanted,
+            incomingSourceName = sourceName,
+            incomingFingerprint = fp,
+            incomingChapterCount = parsed.chapters.size
+        ) ?: return null
+        return dup to fp
+    }
+
+    /**
+     * 真正把书放进书架。
+     * @param mode 有重复时怎么处理；null 表示没重复，直接加
+     * @return 书的 id；跳过时返回空串
+     */
+    fun importParsed(
+        parsed: com.novelforge.app.data.BookParser.Parsed,
+        titleOverride: String,
+        sourceName: String,
+        fingerprint: String,
+        dup: com.novelforge.app.data.DuplicateFinder.Verdict?,
+        mode: DupMode?
     ): String {
+        val wanted = titleOverride.ifBlank { parsed.title }.ifBlank { "未命名" }
+
+        if (dup != null) {
+            when (mode) {
+                DupMode.SKIP -> return ""
+                DupMode.REPLACE -> {
+                    // 原地替换内容，id 保留（书架位置、阅读进度都不动）
+                    val target = dup.existing
+                    target.title = wanted
+                    target.author = parsed.author.ifBlank { target.author }
+                    target.chapters = parsed.chapters.toMutableList()
+                    target.origin = "local"
+                    target.sourceName = sourceName.ifBlank { target.sourceName }
+                    target.fingerprint = fingerprint
+                    store.save()
+                    refresh()
+                    return target.id
+                }
+                DupMode.KEEP_BOTH, null -> { /* 往下按新书加 */ }
+            }
+        }
+
+        val finalTitle = if (dup != null) {
+            com.novelforge.app.data.DuplicateFinder.uniqueTitle(
+                wanted, store.data.importedBooks.map { it.title }
+            )
+        } else wanted
+
         val book = ImportedBook(
-            title = titleOverride.ifBlank { parsed.title }.ifBlank { "未命名" },
+            title = finalTitle,
             author = parsed.author,
             chapters = parsed.chapters,
-            origin = "local"
+            origin = "local",
+            sourceName = sourceName,
+            fingerprint = fingerprint
         )
         store.data.importedBooks.add(book)
         store.save()
         refresh()
         return book.id
+    }
+
+    /** 单文件导入的便捷入口：有重复就按 mode 处理（默认跳过） */
+    fun importLocalBook(
+        parsed: com.novelforge.app.data.BookParser.Parsed,
+        titleOverride: String = "",
+        sourceName: String = "",
+        mode: DupMode = DupMode.SKIP
+    ): String {
+        val hit = findDuplicate(parsed, titleOverride, sourceName)
+        return importParsed(
+            parsed = parsed,
+            titleOverride = titleOverride,
+            sourceName = sourceName,
+            fingerprint = hit?.second ?: com.novelforge.app.data.DuplicateFinder.fingerprintOf(parsed.chapters),
+            dup = hit?.first,
+            mode = if (hit != null) mode else null
+        )
+    }
+
+    /** 批量删除书架上的书（novel = 自己写的，imported = 导入/下载的） */
+    fun deleteBooks(items: List<Pair<String, String>>) {
+        items.forEach { (kind, id) ->
+            when (kind) {
+                "novel" -> store.data.projects.removeAll { it.id == id }
+                else -> store.data.importedBooks.removeAll { it.id == id }
+            }
+        }
+        store.save()
+        refresh()
     }
 
     /** 改导入书的书名 */

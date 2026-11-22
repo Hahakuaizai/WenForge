@@ -25,6 +25,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -525,37 +529,149 @@ fun ScanImportScreen(
         }
     }
 
-    // 真正导入
+    // 导入队列：逐个处理，遇到重复就停下问用户
+    var queue by remember { mutableStateOf<List<FoundBook>>(emptyList()) }
+    var dupState by remember { mutableStateOf<DupUi?>(null) }
+    var applyToAll by remember { mutableStateOf(false) }
+    var forcedMode by remember { mutableStateOf<AppViewModel.DupMode?>(null) }
+    var okCount by remember { mutableStateOf(0) }
+    var failCount by remember { mutableStateOf(0) }
+
     LaunchedEffect(importing) {
         if (!importing) return@LaunchedEffect
-        var ok = 0
-        var fail = 0
-        // picked 存的是 FoundBook.key，先按 key 反查文件
         val byKey = files.associateBy { it.key }
-        withContext(Dispatchers.IO) {
-            picked.toList().forEach { k ->
-                val found = byKey[k] ?: return@forEach
-                runCatching {
-                    val bytes = BookScanner.readBytes(ctx, found)
-                    val parsed = BookParser.parse(bytes, found.name)
-                    if (parsed.chapters.isEmpty()) {
-                        fail++
-                    } else {
-                        withContext(Dispatchers.Main) {
-                            vm.importLocalBook(parsed, found.name.substringBeforeLast('.'))
-                        }
-                        ok++
-                    }
-                }.onFailure { fail++ }
+        queue = picked.toList().mapNotNull { byKey[it] }
+        okCount = 0
+        failCount = 0
+        forcedMode = null
+    }
+
+    // 从队列头部取一个处理
+    LaunchedEffect(queue, dupState, forcedMode) {
+        if (queue.isEmpty()) {
+            if (importing) {
+                importing = false
+                picked.clear()
+                val ok = okCount
+                val fail = failCount
+                message = "导入完成：成功 $ok 本" + if (fail > 0) "，失败 $fail 个" else ""
+                if (ok > 0) onDone()
             }
+            return@LaunchedEffect
         }
-        importing = false
-        picked.clear()
-        message = "导入完成：成功 $ok 本" + if (fail > 0) "，失败 $fail 个" else ""
-        // 书架上长按可改名
-        if (ok > 0) onDone()
+        if (dupState != null) return@LaunchedEffect   // 等用户选
+
+        val found = queue.first()
+        val rest = queue.drop(1)
+        queue = rest
+
+        var parsed: com.novelforge.app.data.BookParser.Parsed? = null
+        withContext(Dispatchers.IO) {
+            parsed = runCatching {
+                BookParser.parse(BookScanner.readBytes(ctx, found), found.name)
+            }.getOrNull()
+        }
+        val p = parsed
+        if (p == null || p.chapters.isEmpty()) {
+            failCount++
+            return@LaunchedEffect
+        }
+
+        val title = found.name.substringBeforeLast('.')
+        val hit = vm.findDuplicate(p, title, found.name)
+        if (hit == null) {
+            vm.importParsed(p, title, found.name, com.novelforge.app.data.DuplicateFinder.fingerprintOf(p.chapters), null, null)
+            okCount++
+            return@LaunchedEffect
+        }
+
+        // 有重复：之前选过「全部应用」就直接按那个来
+        val mode = forcedMode
+        if (mode != null) {
+            val id = vm.importParsed(p, title, found.name, hit.second, hit.first, mode)
+            if (id.isNotBlank()) okCount++
+            return@LaunchedEffect
+        }
+        // 否则停下来问
+        dupState = DupUi(found, p, title, hit.first, hit.second)
+    }
+
+    // ——— 重复提示弹窗 ———
+    dupState?.let { d ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { dupState = null; importing = false; queue = emptyList() },
+            title = {
+                Text(
+                    "书架已有《${d.verdict.existing.title}》",
+                    style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1A1A1A))
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        buildString {
+                            append("要导入的是《${d.title}》")
+                            append("\n")
+                            append(
+                                when {
+                                    d.verdict.sameContent && d.verdict.sameName -> "内容和文件名完全一样"
+                                    d.verdict.sameContent -> "内容完全一样，只是文件名不同"
+                                    else -> "文件名和格式一样"
+                                }
+                            )
+                            append("\n\n替换 = 用新文件覆盖书架上那本（阅读进度保留）\n跳过 = 不动书架\n重复导入 = 另外加一本，名字加（1）")
+                            val left = queue.size
+                            if (left > 0) append("\n\n后面还有 $left 个文件等着导入")
+                        },
+                        style = TextStyle(fontSize = 12.5.sp, color = Color(0xFF6B6B66), lineHeight = 19.sp)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.Checkbox(
+                            checked = applyToAll,
+                            onCheckedChange = { applyToAll = it }
+                        )
+                        Text("后面的重复都这样处理", style = TextStyle(fontSize = 12.sp, color = Color(0xFF1A1A1A)))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (applyToAll) forcedMode = AppViewModel.DupMode.KEEP_BOTH
+                    val id = vm.importParsed(d.parsed, d.title, d.found.name, d.fingerprint, d.verdict, AppViewModel.DupMode.KEEP_BOTH)
+                    if (id.isNotBlank()) okCount++
+                    dupState = null
+                    applyToAll = false
+                }) { Text("重复导入", color = Color(0xFF1A1A1A)) }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        if (applyToAll) forcedMode = AppViewModel.DupMode.SKIP
+                        dupState = null
+                        applyToAll = false
+                    }) { Text("跳过", color = Color(0xFF6B6B66)) }
+                    TextButton(onClick = {
+                        if (applyToAll) forcedMode = AppViewModel.DupMode.REPLACE
+                        val id = vm.importParsed(d.parsed, d.title, d.found.name, d.fingerprint, d.verdict, AppViewModel.DupMode.REPLACE)
+                        if (id.isNotBlank()) okCount++
+                        dupState = null
+                        applyToAll = false
+                    }) { Text("替换", color = Color(0xFFB4402F)) }
+                }
+            }
+        )
     }
 }
+
+/** 批量导入时卡在某本书上，等用户决定怎么处理重复 */
+private data class DupUi(
+    val found: FoundBook,
+    val parsed: com.novelforge.app.data.BookParser.Parsed,
+    val title: String,
+    val verdict: com.novelforge.app.data.DuplicateFinder.Verdict,
+    val fingerprint: String
+)
 
 @Composable
 private fun FormatChip(
