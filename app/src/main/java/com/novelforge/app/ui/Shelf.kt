@@ -1132,42 +1132,52 @@ private fun BookCarousel(
                 }
         )
 
-        // 地板软阴影：留在未抽出的基座位置（原作同款，书抽出来影子不动）
-        // 路径和渐变只算一次（局部坐标），每帧只做平移 —— 滑动时不重建对象、不重算
-        val densF = density.density
-        val shadowPath = remember(spine, cover) {
-            val dxs = cover * 0.66f
-            val dys = cover * -0.30f
-            Path().apply {
-                moveTo(0f, 0f)
-                lineTo(spine, 1.4f * densF)
-                lineTo(spine + dxs, 1.4f * densF + dys)
-                lineTo(dxs, dys)
-                lineTo(dxs - 10f * densF, dys + 10f * densF)
-                lineTo(-10f * densF, 10f * densF)
-                close()
+        // 地板软阴影：只给「当前选中（抽出来）的那本」画一道浅影。
+        //
+        // 踩过的坑（都试过，记下来免得再走一遍）：
+        //  1. 给十几本都画 → 多边形重叠 75%、alpha 叠加 → 中心糊成一块黑
+        //  2. 每帧十几个渐变填充 → 滑动掉帧
+        //  3. canvas.scale() 压扁椭圆 → 连 translate 一起被压，影子跑到书底下
+        //  4. Compose 的 Brush.radialGradient 是正圆，压成椭圆后渐变半径对不上 → 变成实心黑块
+        // 最终：用原生 android.graphics.RadialGradient + Matrix 做椭圆缩放，
+        // 渐变真的从中心往外淡出。每帧只画 1 个椭圆，开销可忽略。
+        val shadowCx = startX + cover * 0.33f + spine * 0.5f
+        val shadowCy = baseY + H + cover * 0.04f
+        val shadowRx = (spine + cover * 0.66f) * 0.60f
+        val shadowRy = cover * 0.10f
+        // 原生 paint 只建一次，Matrix 每次改
+        val shadowPaint = remember {
+            android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                shader = android.graphics.RadialGradient(
+                    0f, 0f, 1f,
+                    intArrayOf(
+                        android.graphics.Color.argb(38, 0x2B, 0x28, 0x22),
+                        android.graphics.Color.argb(18, 0x2B, 0x28, 0x22),
+                        android.graphics.Color.argb(0, 0x2B, 0x28, 0x22)
+                    ),
+                    floatArrayOf(0f, 0.5f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
             }
         }
-        val shadowBrush = remember(spine, cover) {
-            val dxs = cover * 0.66f
-            val dys = cover * -0.30f
-            // 渐变按原作 SVG 的 objectBoundingBox 对角线：包围盒左上 → 右下，0.07 → 0（原作 0.13 在实机上太黑，减半）
-            Brush.linearGradient(
-                listOf(Color(0xFF2B2822).copy(alpha = 0.07f), Color(0xFF2B2822).copy(alpha = 0f)),
-                start = Offset(-10f * densF, dys),
-                end = Offset(spine + dxs, 10f * densF)
-            )
-        }
+        val shadowMatrix = remember { android.graphics.Matrix() }
         Canvas(Modifier.fillMaxSize()) {
-            for (i in books.indices) {
-                val d = relOfStatic(i, pos, n)
-                if (kotlin.math.abs(d) > rangeF) continue
-                val sx = startX + d * pitch
-                val sy = baseY + railY(d) + H
-                drawContext.canvas.save()
-                drawContext.canvas.translate(sx, sy)
-                drawPath(shadowPath, shadowBrush)
-                drawContext.canvas.restore()
+            val centerIdx = nearestIndex(pos, n)
+            val dCenter = relOfStatic(centerIdx, pos, n)
+            val fade = (1f - kotlin.math.abs(dCenter) * 0.7f).coerceIn(0f, 1f)
+            if (fade > 0.02f) {
+                val cx = shadowCx + dCenter * pitch
+                val cy = shadowCy + railY(dCenter)
+                // 渐变单位圆 → 椭圆：x 放大 rx、y 放大 ry
+                shadowMatrix.setScale(shadowRx, shadowRy)
+                shadowMatrix.postTranslate(cx, cy)
+                (shadowPaint.shader as? android.graphics.RadialGradient)?.setLocalMatrix(shadowMatrix)
+                shadowPaint.alpha = (fade * 255).toInt()
+                drawContext.canvas.nativeCanvas.drawOval(
+                    cx - shadowRx, cy - shadowRy,
+                    cx + shadowRx, cy + shadowRy,
+                    shadowPaint
+                )
             }
         }
 
@@ -1195,18 +1205,22 @@ private fun BookCarousel(
                         translationY = y
                     }
             ) {
-                BookSolid(
-                    title = book.title,
-                    no = i + 1,
-                    hue = book.hue,
-                    badge = book.badge,
-                    coverAuthor = book.coverAuthor,
-                    statusText = book.statusText,
-                    serial = "WK-${kotlin.math.abs(book.id.hashCode()) % 100000000}",
-                    spinePx = spine,
-                    coverPx = cover,
-                    hPx = H
-                )
+                // key() 隔离：书的内容跟 pos 无关，滑动时 Compose 会跳过这棵子树的重组
+                // （对应 Flutter 版的 RepaintBoundary —— 位置在变、内容不重画）
+                androidx.compose.runtime.key(book.id) {
+                    BookSolid(
+                        title = book.title,
+                        no = i + 1,
+                        hue = book.hue,
+                        badge = book.badge,
+                        coverAuthor = book.coverAuthor,
+                        statusText = book.statusText,
+                        serial = "WK-${kotlin.math.abs(book.id.hashCode()) % 100000000}",
+                        spinePx = spine,
+                        coverPx = cover,
+                        hPx = H
+                    )
+                }
             }
         }
     }
@@ -1464,6 +1478,24 @@ private fun BookSolid(
     val dx = coverPx * 0.66f
     val dy = coverPx * -0.30f
     val skew = spinePx * 0.1f
+    // 这些字符串每次重组都会重算（String.format / joinToString），
+    // 16 本书 × 每秒几十次重组 = 每秒上千次格式化。缓存起来。
+    val noLabel = remember(no) { String.format("%03d", no) }
+    val noShort = remember(no) { String.format("%02d", no) }
+    val spineText = remember(title) {
+        val t = title.take(7) + if (title.length > 7) "…" else ""
+        t.toCharArray().joinToString("\n")
+    }
+    // 顶面路径尺寸只跟书的大小有关，提到 remember 里 —— 不然滑动时每帧每本 new 一个 Path
+    val topPath = remember(spinePx, coverPx, dx, dy, skew) {
+        Path().apply {
+            moveTo(0f, 0f)
+            lineTo(spinePx, skew)
+            lineTo(spinePx + dx, skew + dy)
+            lineTo(dx, dy)
+            close()
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         Canvas(Modifier.fillMaxSize()) {
@@ -1472,13 +1504,7 @@ private fun BookSolid(
             val stroke = paints.stroke
 
             // 顶面（书页）
-            val top = Path().apply {
-                moveTo(0f, 0f)
-                lineTo(spinePx, skew)
-                lineTo(spinePx + dx, skew + dy)
-                lineTo(dx, dy)
-                close()
-            }
+            val top = topPath
             drawPath(
                 top,
                 Brush.verticalGradient(
@@ -1530,7 +1556,7 @@ private fun BookSolid(
             mono.textSize = 7f * u
             mono.letterSpacing = 0.06f
             mono.color = android.graphics.Color.rgb(0x8A, 0x85, 0x78)
-            canvas.drawText("NO.${String.format("%03d", no)}", padX, padTop + 7f * u, mono)
+            canvas.drawText("NO.$noLabel", padX, padTop + 7f * u, mono)
 
             // 顶行右：印章（题材 / 来源）
             val badgePaint = paints.serifPlain
@@ -1627,7 +1653,7 @@ private fun BookSolid(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                String.format("%02d", no),
+                noShort,
                 style = TextStyle(fontSize = 7.5.sp, color = Color(0xFF9A927E)),
                 maxLines = 1
             )
