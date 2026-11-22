@@ -80,7 +80,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.drawscope.drawImage
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -1740,7 +1741,7 @@ private fun BookSolid(
             }
             img
         }
-        Canvas(Modifier.fillMaxSize()) { drawImage(bookBmp) }
+        Image(bitmap = bookBmp, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
 
         // 书脊文字：上编号、中竖排书名（超 7 字加 …）、下圆点
         Column(
