@@ -872,7 +872,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val url = store.data.settings.updateServerUrl.ifBlank { "http://127.0.0.1:8787" }
         if (!silent) {
             updateChecking = true
-            updateStatus = "正在连 ${url} …"
+            updateStatus = "正在检查更新（电脑 + GitHub 两个渠道都问）…"
         }
         viewModelScope.launch {
             // 渠道一：自己的电脑
@@ -893,8 +893,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 data = store.data
             }
             // 渠道二：GitHub Releases（电脑不开着也能更）
-            runCatching { com.novelforge.app.net.GithubUpdate.fetchLatest() }
-                .getOrNull()?.let { ghUpdate = it }
+            val ghResult = runCatching {
+                com.novelforge.app.net.GithubUpdate.fetchLatestDetailed()
+            }.getOrElse {
+                com.novelforge.app.net.GithubUpdate.GhResult.Failed(
+                    it.message ?: it.javaClass.simpleName
+                )
+            }
+            // 无论成功失败都要重设 ghUpdate：上次查到的版本不能一直挂着，
+            // 不然电脑关了、网断了还显示「有新版本」
+            ghUpdate = (ghResult as? com.novelforge.app.net.GithubUpdate.GhResult.Ok)?.entry
+            val ghFailed = ghResult is com.novelforge.app.net.GithubUpdate.GhResult.Failed
+            val ghFailReason = (ghResult as? com.novelforge.app.net.GithubUpdate.GhResult.Failed)?.reason
+                ?: ""
 
             val (name, code) = currentVersion()
             val latest = latestUpdate
@@ -903,15 +914,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 prepareInBackground(latest, url)
             }
             if (!silent) {
-                updateStatus = when {
-                    latest == null ->
-                        if (lan == null) "❌ 电脑连不上，GitHub 也没查到（没网？）"
-                        else "服务器上还没有版本"
-                    latest.versionCode > code ->
-                        "有新版本 ${latest.versionName}（当前 $name）" +
-                            if (latest.directUrl.isNotBlank()) " · 来自 GitHub" else ""
-                    else -> "已经是最新的 $name"
+                val lanLine = when {
+                    lan == null ->
+                        "电脑渠道：连不上。确认电脑上 dev-sync 开着、手机和电脑连同一个 WiFi"
+                    lan.isEmpty() ->
+                        "电脑渠道：连上了，但电脑上还没有打包出版本"
+                    else ->
+                        "电脑渠道：连上了，最新 v${lan.first().versionName}"
                 }
+                val ghLine = when {
+                    ghFailed ->
+                        "GitHub 渠道：连不上（$ghFailReason）。多半是网络到不了 GitHub——开代理并把本应用加进代理名单，再试一次"
+                    ghUpdate == null ->
+                        "GitHub 渠道：能连上，但没有可用的版本（还没发布过带安装包的 Release）"
+                    else ->
+                        "GitHub 渠道：查到了，最新 v${ghUpdate!!.versionName}"
+                }
+                val summary = when {
+                    latest != null && latest.versionCode > code ->
+                        "✅ 有新版本 v${latest.versionName}（你现在是 v$name），" +
+                            (if (latest.directUrl.isNotBlank()) "来自 GitHub" else "来自你的电脑") +
+                            "，点下面「下载并安装」"
+                    latest != null ->
+                        "✅ 已经是最新版 v$name，没有比你更新的版本"
+                    lan == null && ghFailed ->
+                        "❌ 两个渠道都没连上，这次没法确认有没有更新（看下面两行各自的原因）"
+                    lan == null ->
+                        "❌ 没查到任何版本：电脑没连上，GitHub 上也没有可用的版本"
+                    else ->
+                        "✅ 已经是最新版 v$name"
+                }
+                updateStatus = summary + "\n" + lanLine + "\n" + ghLine
                 updateChecking = false
             }
         }
@@ -930,17 +963,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun scanForUpdateServer() {
         updateChecking = true
-        updateStatus = "正在扫局域网… 最多十几秒"
+        updateStatus = "正在局域网里找你的电脑… 最多十几秒"
         viewModelScope.launch {
             val found = runCatching { UpdateClient.scanLan() }.getOrNull()
             if (found != null) {
                 setUpdateServer(found)
-                updateStatus = "找到 $found"
+                updateStatus = "找到电脑 $found，正在检查更新…"
                 updateChecking = false
                 checkUpdates()
             } else {
                 updateChecking = false
-                updateStatus = "没找到。确认手机和电脑同一个 WiFi，电脑上的更新服务开着"
+                updateStatus = "没找到电脑。常见原因：① 电脑上的 dev-sync 没开 ② 手机和电脑不在同一个 WiFi ③ 电脑 IP 变了——也可以手动填电脑地址后点「检查更新」，或者走 GitHub 渠道"
             }
         }
     }

@@ -226,43 +226,74 @@ object GithubUpdate {
         .build()
 
     /** 查最新 Release；没有、没 APK、版本号读不出来都返回 null（当无更新处理） */
-    suspend fun fetchLatest(): UpdateEntry? = withContext(Dispatchers.IO) {
-        val req = Request.Builder()
-            .url(LATEST_URL)
-            .header("Accept", "application/vnd.github+json")
-            .build()
-        val text = http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return@withContext null
-            resp.body?.string() ?: return@withContext null
-        }
-        val root = JSONObject(text)
-        val versionName = root.optString("tag_name").removePrefix("v").removePrefix("V")
-        if (versionName.isBlank()) return@withContext null
-        val assets = root.optJSONArray("assets") ?: return@withContext null
-        var asset: JSONObject? = null
-        for (i in 0 until assets.length()) {
-            val a = assets.getJSONObject(i)
-            if (a.optString("name").endsWith(".apk", ignoreCase = true)) { asset = a; break }
-        }
-        val apkAsset = asset ?: return@withContext null
-        val fileName = apkAsset.optString("name")
-        // versionCode 编在附件名里（wenforge-v0.4.41-47.apk），读不出来就不用这条
-        val code = Regex("""-(\d+)\.apk$""").find(fileName)?.groupValues?.get(1)?.toIntOrNull()
-            ?: return@withContext null
-        val notes = root.optString("body")
-            .lines()
-            .map { it.trim().trimStart('#').trim().removePrefix("- ").removePrefix("* ").trim() }
-            .filter { it.isNotBlank() }
-            .take(12)
-        UpdateEntry(
-            versionName = versionName,
-            versionCode = code,
-            time = root.optString("published_at").take(16).replace('T', ' '),
-            notes = notes,
-            file = fileName,
-            size = apkAsset.optLong("size"),
-            sha256 = apkAsset.optString("digest").removePrefix("sha256:"),
-            directUrl = apkAsset.optString("browser_download_url")
-        )
+    /**
+     * 查 GitHub 上最新的 Release。
+     *
+     * 三种结果要分开，界面才能说清楚是「网到不了 GitHub」还是「还没发过带 APK 的版本」：
+     *  · ok        —— 查到了可用的版本
+     *  · noRelease —— 请求成功，但没有可用的版本（没发布过 / 没有 apk 附件 / 附件名读不出 versionCode）
+     *  · failed    —— 请求本身失败（网络到不了 GitHub、超时、403 限流）
+     */
+    sealed class GhResult {
+        data class Ok(val entry: UpdateEntry) : GhResult()
+        data object NoRelease : GhResult()
+        data class Failed(val reason: String) : GhResult()
     }
+
+    suspend fun fetchLatestDetailed(): GhResult = withContext(Dispatchers.IO) {
+        val text = runCatching {
+            val req = Request.Builder()
+                .url(LATEST_URL)
+                .header("Accept", "application/vnd.github+json")
+                .build()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext GhResult.Failed("HTTP ${resp.code}")
+                }
+                resp.body?.string()
+            }
+        }.getOrElse { e ->
+            return@withContext GhResult.Failed(e.message ?: e.javaClass.simpleName)
+        } ?: return@withContext GhResult.Failed("响应为空")
+
+        runCatching {
+            val root = JSONObject(text)
+            val versionName = root.optString("tag_name").removePrefix("v").removePrefix("V")
+            if (versionName.isBlank()) return@withContext GhResult.NoRelease
+            val assets = root.optJSONArray("assets") ?: return@withContext GhResult.NoRelease
+            var asset: JSONObject? = null
+            for (i in 0 until assets.length()) {
+                val a = assets.getJSONObject(i)
+                if (a.optString("name").endsWith(".apk", ignoreCase = true)) { asset = a; break }
+            }
+            val apkAsset = asset ?: return@withContext GhResult.NoRelease
+            val fileName = apkAsset.optString("name")
+            // versionCode 编在附件名里（wenforge-v0.4.41-47.apk），读不出来就不用这条
+            val code = Regex("""-(\d+)\.apk$""").find(fileName)?.groupValues?.get(1)?.toIntOrNull()
+                ?: return@withContext GhResult.NoRelease
+            val notes = root.optString("body")
+                .lines()
+                .map { it.trim().trimStart('#').trim().removePrefix("- ").removePrefix("* ").trim() }
+                .filter { it.isNotBlank() }
+                .take(12)
+            GhResult.Ok(
+                UpdateEntry(
+                    versionName = versionName,
+                    versionCode = code,
+                    time = root.optString("published_at").take(16).replace('T', ' '),
+                    notes = notes,
+                    file = fileName,
+                    size = apkAsset.optLong("size"),
+                    sha256 = apkAsset.optString("digest").removePrefix("sha256:"),
+                    directUrl = apkAsset.optString("browser_download_url")
+                )
+            )
+        }.getOrElse { e ->
+            GhResult.Failed("解析失败：" + (e.message ?: e.javaClass.simpleName))
+        }
+    }
+
+    /** 老接口：只关心「有没有可用的新版本」时用 */
+    suspend fun fetchLatest(): UpdateEntry? =
+        (fetchLatestDetailed() as? GhResult.Ok)?.entry
 }

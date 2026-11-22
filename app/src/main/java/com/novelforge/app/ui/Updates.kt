@@ -81,10 +81,10 @@ fun UpdatesScreen(vm: AppViewModel, onBack: () -> Unit) {
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(18.dp)) {
-                        Text("更新来自你自己的电脑", fontWeight = FontWeight.Bold)
+                        Text("检查更新（两个渠道）", fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "电脑上跑着更新服务，手机上点一下就能拿到最新版。",
+                            "点「检查更新」会同时问你的电脑和 GitHub，谁有新版用谁。电脑渠道要电脑上开着 dev-sync；GitHub 渠道要网络能到 GitHub（国内直连常失败，开代理再试）。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -109,7 +109,7 @@ fun UpdatesScreen(vm: AppViewModel, onBack: () -> Unit) {
                                 onClick = { vm.scanForUpdateServer() },
                                 enabled = !vm.updateChecking && !vm.updateDownloading,
                                 modifier = Modifier.weight(1f)
-                            ) { Text("自动查找") }
+                            ) { Text("自动找电脑") }
                         }
                         if (vm.updateStatus.isNotBlank()) {
                             Spacer(Modifier.height(10.dp))

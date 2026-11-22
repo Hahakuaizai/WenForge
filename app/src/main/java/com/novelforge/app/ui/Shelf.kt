@@ -41,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -1150,9 +1151,9 @@ private fun BookCarousel(
         val shadowBrush = remember(spine, cover) {
             val dxs = cover * 0.66f
             val dys = cover * -0.30f
-            // 渐变按原作 SVG 的 objectBoundingBox 对角线：包围盒左上 → 右下，0.13 → 0
+            // 渐变按原作 SVG 的 objectBoundingBox 对角线：包围盒左上 → 右下，0.07 → 0（原作 0.13 在实机上太黑，减半）
             Brush.linearGradient(
-                listOf(Color(0xFF2B2822).copy(alpha = 0.13f), Color(0xFF2B2822).copy(alpha = 0f)),
+                listOf(Color(0xFF2B2822).copy(alpha = 0.07f), Color(0xFF2B2822).copy(alpha = 0f)),
                 start = Offset(-10f * densF, dys),
                 end = Offset(spine + dxs, 10f * densF)
             )
@@ -1175,7 +1176,7 @@ private fun BookCarousel(
         // 流畅度关键：每本书渲染成一个图层（内容不变就不重绘），位置在绘制期用
         // graphicsLayer 平移 —— 滑动时只动图层，不再每帧给几十本书重新布局+重绘封面。
         // 绘制序按整数槽位算（跨槽才变），精确位置在图层里读实时 pos。
-        val slotPos = pos.roundToInt().toFloat()
+        val slotPos by remember(n) { derivedStateOf { pos.roundToInt().toFloat() } }
         val order = books.indices
             .filter { kotlin.math.abs(relOfStatic(it, slotPos, n)) <= rangeF + 1f }
             .sortedBy { relOfStatic(it, slotPos, n) }
@@ -1211,7 +1212,7 @@ private fun BookCarousel(
     }
 
     // 信息区
-    val curIndex = ((pos.roundToInt() % n) + n) % n
+    val curIndex by remember(n) { derivedStateOf { ((pos.roundToInt() % n) + n) % n } }
     val cur = books[curIndex]
     Spacer(Modifier.height(4.dp))
     Column(Modifier.padding(horizontal = 24.dp)) {
