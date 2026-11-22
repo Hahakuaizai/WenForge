@@ -246,21 +246,7 @@ fun MeScreen(
             MeDivider()
             MeRow("用量统计", "花费、token、缓存命中、逐章用量", Icons.Default.BarChart, onOpenStats)
             MeDivider()
-            MeRow("全局设置", "分阶段模型、记忆库、提示词", Icons.Default.Settings, onOpenSettings)
-            MeDivider()
-            MeRow(
-                "版本与更新",
-                "从电脑拉最新版，看近十次改动",
-                Icons.Default.CloudDownload,
-                onOpenUpdates
-            )
-            MeDivider()
-            MeRow(
-                "存储管理",
-                "各部分占用、清缓存",
-                Icons.Default.Storage,
-                onOpenStorage
-            )
+            MeRow("设置", "版本与更新、存储管理、触感反馈", Icons.Default.Settings, onOpenSettings)
         }
 
         Spacer(Modifier.height(24.dp))

@@ -8,22 +8,27 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.novelforge.app.ui.AppViewModel
 import com.novelforge.app.ui.CreateScreen
 import com.novelforge.app.ui.HomeScreen
@@ -33,6 +38,7 @@ import com.novelforge.app.ui.MainTabsScreen
 import com.novelforge.app.ui.MemoryScreen
 import com.novelforge.app.ui.NovelForgeTheme
 import com.novelforge.app.ui.ProviderEditScreen
+import com.novelforge.app.ui.AppSettingsScreen
 import com.novelforge.app.ui.ProvidersScreen
 import com.novelforge.app.ui.ReaderScreen
 import com.novelforge.app.ui.ScanImportScreen
@@ -52,35 +58,64 @@ class MainActivity : ComponentActivity() {
                     val vm: AppViewModel = viewModel()
                     val nav = rememberNavController()
 
-                    // 启动自动检查更新（静默：连不上电脑就当无事发生，有新版才弹一次）
+                    // 启动自动检查更新（静默：连不上就当无事发生，有新版才弹一次）
                     LaunchedEffect(Unit) {
                         vm.checkUpdates(silent = true)
                     }
                     var updatePromptOff by remember { mutableStateOf(false) }
-                    val latestEntry = vm.updateEntries.firstOrNull()
+                    val latestEntry = vm.latestUpdate
                     if (vm.updateAvailable && !updatePromptOff && latestEntry != null) {
                         AlertDialog(
-                            onDismissRequest = { updatePromptOff = true },
-                            title = { Text("有新版本 v${latestEntry.versionName}") },
+                            onDismissRequest = {
+                                if (!vm.updateDownloading) updatePromptOff = true
+                            },
+                            title = {
+                                Text("有新版本 v${latestEntry.versionName}")
+                            },
                             text = {
-                                Text(
-                                    latestEntry.notes.firstOrNull()
-                                        ?: "电脑上有新版本，去更新页看看这次改了什么。"
-                                )
+                                androidx.compose.foundation.layout.Column {
+                                    Text(
+                                        latestEntry.notes.firstOrNull()
+                                            ?: "点「立即更新」直接下载安装。"
+                                    )
+                                    Text(
+                                        if (latestEntry.directUrl.isNotBlank()) "来自 GitHub"
+                                        else "来自你的电脑",
+                                        style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                        color = androidx.compose.material3.MaterialTheme.colorScheme.outline
+                                    )
+                                    if (vm.updateDownloading) {
+                                        androidx.compose.foundation.layout.Spacer(
+                                            Modifier.height(12.dp)
+                                        )
+                                        LinearProgressIndicator(
+                                            progress = { vm.updateProgress },
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                        Text(
+                                            "正在下载…",
+                                            style = androidx.compose.material3.MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                }
                             },
                             confirmButton = {
-                                TextButton(onClick = {
-                                    updatePromptOff = true
-                                    nav.navigate("updates")
-                                }) { Text("去更新") }
+                                if (!vm.updateDownloading) {
+                                    TextButton(onClick = {
+                                        vm.installUpdate(latestEntry)
+                                    }) { Text("立即更新") }
+                                }
                             },
                             dismissButton = {
-                                TextButton(onClick = { updatePromptOff = true }) {
-                                    Text("稍后")
+                                if (!vm.updateDownloading) {
+                                    TextButton(onClick = {
+                                        updatePromptOff = true
+                                    }) { Text("稍后") }
                                 }
                             }
                         )
                     }
+
                     NavHost(
                         navController = nav,
                         startDestination = "main",
@@ -104,7 +139,7 @@ class MainActivity : ComponentActivity() {
                                 onOpenImportedBook = { nav.navigate("read/imported/$it/0") },
                                 onCreate = { nav.navigate("create") },
                                 onOpenProviders = { nav.navigate("providers") },
-                                onOpenSettings = { nav.navigate("settings") },
+                                onOpenSettings = { nav.navigate("appsettings") },
                                 onOpenStats = { nav.navigate("stats") },
                                 onOpenImport = { nav.navigate("import") },
                                 onOpenReader = { kind, id, ch -> nav.navigate("read/$kind/$id/$ch") },
@@ -153,7 +188,18 @@ class MainActivity : ComponentActivity() {
                             UpdatesScreen(vm) { nav.popBackStack() }
                         }
                         composable("settings") {
-                            SettingsScreen(vm = vm, onBack = { nav.popBackStack() })
+                            SettingsScreen(
+                                vm = vm,
+                                onBack = { nav.popBackStack() }
+                            )
+                        }
+                        composable("appsettings") {
+                            AppSettingsScreen(
+                                vm = vm,
+                                onBack = { nav.popBackStack() },
+                                onOpenUpdates = { nav.navigate("updates") },
+                                onOpenStorage = { nav.navigate("storage") }
+                            )
                         }
                         composable("stats") {
                             StatsScreen(vm = vm, onBack = { nav.popBackStack() })
@@ -186,7 +232,8 @@ class MainActivity : ComponentActivity() {
                             ProvidersScreen(
                                 vm = vm,
                                 onEdit = { id -> nav.navigate("provider_edit/${id ?: "new"}") },
-                                onBack = { nav.popBackStack() }
+                                onBack = { nav.popBackStack() },
+                                onOpenGenSettings = { nav.navigate("settings") }
                             )
                         }
                         composable(

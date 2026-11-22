@@ -25,10 +25,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.TextButton
-import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +45,7 @@ import com.novelforge.app.data.BookParser
 import com.novelforge.app.data.BookScanner
 import com.novelforge.app.data.FoundBook
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -73,6 +70,52 @@ fun ScanImportScreen(
     var extFilter by remember { mutableStateOf("all") }
     // 每个格式组里「非小说」那一段默认折叠，记一下哪些被展开了
     val expandedRest = remember { mutableStateListOf<String>() }
+
+    // 已入库判定：优先看导入时记下的来源键（路径 / uri），
+    // 老书入库时没记键，就用「文件名 ≈ 书名」兜底匹配
+    fun normTitle(s: String): String =
+        s.trim().lowercase().replace(" ", "").replace("　", "")
+    val inLibKeys = vm.data.importedBooks.map { it.sourceKey }.filter { it.isNotBlank() }.toSet()
+    val inLibTitles = vm.data.importedBooks.map { normTitle(it.title) }.toSet()
+    fun inLibrary(f: FoundBook): Boolean =
+        f.key in inLibKeys || normTitle(f.name.substringBeforeLast('.')) in inLibTitles
+
+    // 点已入库的行：解析后按「文件名+格式+内容都一样」严格判重，
+    // 真重复才弹跳过/覆盖/重复导入；只是同名不同内容就按新书导入
+    var dupPrompt by remember {
+        mutableStateOf<Triple<FoundBook, BookParser.Parsed, com.novelforge.app.data.ImportedBook>?>(null)
+    }
+    var checkingDup by remember { mutableStateOf(false) }
+    val scanScope = androidx.compose.runtime.rememberCoroutineScope()
+    fun startDupCheck(f: FoundBook) {
+        if (checkingDup || importing) return
+        checkingDup = true
+        message = "正在核对《${f.name.substringBeforeLast('.')}》的内容…"
+        scanScope.launch {
+            val parsed = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = BookScanner.readBytes(ctx, f)
+                    BookParser.parse(bytes, f.name)
+                }.getOrNull()
+            }
+            checkingDup = false
+            if (parsed == null || parsed.chapters.isEmpty()) {
+                message = "这个文件解析失败，没法确认是否重复"
+                return@launch
+            }
+            val dup = vm.findDuplicateBook(f.name, parsed.chapters)
+            if (dup == null) {
+                vm.importLocalBook(
+                    parsed, f.name.substringBeforeLast('.'), f.key,
+                    sourceName = f.name
+                )
+                message = "《${f.name.substringBeforeLast('.')}》和书架里那本内容不同，已作为新书导入"
+                Haptics.confirm(ctx)
+            } else {
+                dupPrompt = Triple(f, parsed, dup)
+            }
+        }
+    }
 
     // Android 11+ 需要「所有文件访问」才能读到 Download 里的 txt
     var hasAllFiles by remember { mutableStateOf(false) }
@@ -131,25 +174,6 @@ fun ScanImportScreen(
         if (files.isEmpty() && BookScanner.errs.isNotEmpty()) {
             message = "扫描出错：" + BookScanner.errs.take(2).joinToString("；")
         }
-        // 标出哪些书已经在书架上了（按文件名+格式，跟导入时的重复判定同一套）
-        files = withContext(Dispatchers.IO) {
-            val shelf = vm.data.importedBooks
-            files.map { f ->
-                val hit = runCatching {
-                    val bytes = BookScanner.readBytes(ctx, f)
-                    val parsed = BookParser.parse(bytes, f.name)
-                    val fp = com.novelforge.app.data.DuplicateFinder.fingerprintOf(parsed.chapters)
-                    com.novelforge.app.data.DuplicateFinder.find(
-                        books = shelf,
-                        incomingTitle = f.name.substringBeforeLast('.'),
-                        incomingSourceName = f.name,
-                        incomingFingerprint = fp,
-                        incomingChapterCount = parsed.chapters.size
-                    ) != null
-                }.getOrDefault(false)
-                f.copy(inLibrary = hit)
-            }
-        }
         scanning = false
     }
 
@@ -190,11 +214,7 @@ fun ScanImportScreen(
                                 val shown = if (extFilter == "all") files
                                 else files.filter { it.ext == extFilter }
                                 val novel = shown.count { it.looksLikeNovel }
-                                val already = shown.count { it.inLibrary }
-                                buildString {
-                                    append("找到 ${shown.size} 个文件 · $novel 个像小说")
-                                    if (already > 0) append(" · $already 个已入库")
-                                }
+                                "找到 ${shown.size} 个文件 · $novel 个像小说"
                             }
                         },
                         style = MaterialTheme.typography.labelSmall,
@@ -221,7 +241,7 @@ fun ScanImportScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (picked.isNotEmpty() && picked.size == (if (extFilter == "all") files else files.filter { it.ext == extFilter }).count { it.looksLikeNovel && !it.inLibrary }) "取消全选" else "全选小说",
+                        if (picked.isNotEmpty() && picked.size == (if (extFilter == "all") files else files.filter { it.ext == extFilter }).count { it.looksLikeNovel && !inLibrary(it) }) "取消全选" else "全选小说",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
@@ -229,8 +249,7 @@ fun ScanImportScreen(
                             .clickable {
                                 val base = if (extFilter == "all") files
                                 else files.filter { it.ext == extFilter }
-                                // 已入库的不参与全选
-                                val novels = base.filter { it.looksLikeNovel && !it.inLibrary }
+                                val novels = base.filter { it.looksLikeNovel && !inLibrary(it) }
                                 if (picked.size == novels.size && novels.isNotEmpty()) picked.clear()
                                 else {
                                     picked.clear()
@@ -390,14 +409,80 @@ fun ScanImportScreen(
                     }
                     // 小说直接列出来
                     items(novelsInGroup, key = { it.key }) { f ->
-                    FileRow(
-                        f = f,
-                        on = f.key in picked,
-                        onToggle = {
-                            if (f.inLibrary) return@FileRow
-                            if (f.key in picked) picked.remove(f.key) else picked.add(f.key)
+                    val on = f.key in picked
+                    val inLib = inLibrary(f)
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .clickable {
+                                if (inLib) {
+                                    startDupCheck(f)
+                                } else {
+                                    if (on) picked.remove(f.key) else picked.add(f.key)
+                                    Haptics.tap(ctx)
+                                }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (inLib) {
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(MaterialTheme.colorScheme.primary)
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    "已入库",
+                                    style = TextStyle(
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                )
+                            }
+                        } else {
+                            Box(
+                                Modifier
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (on) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.surfaceVariant
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (on) {
+                                    Text(
+                                        "✓",
+                                        style = TextStyle(fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary)
+                                    )
+                                }
+                            }
                         }
-                    )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                f.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                if (inLib) "已在书架里 · ${f.sizeLabel} · 点按处理"
+                                else "${f.ext.uppercase()} · ${f.sizeLabel} · ${f.hint}" +
+                                    if (f.looksLikeNovel) "" else "（仍可导入）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                     }
 
                     // 同格式里不是小说的部分，默认折叠
@@ -429,15 +514,80 @@ fun ScanImportScreen(
                         }
                         if (restOpen) {
                             items(restInGroup, key = { it.key }) { f ->
-                                FileRow(
-                                    f = f,
-                                    on = f.key in picked,
-                                    compact = true,
-                                    onToggle = {
-                                        if (f.inLibrary) return@FileRow
-                                        if (f.key in picked) picked.remove(f.key) else picked.add(f.key)
+                                val on = f.key in picked
+                                val inLib = inLibrary(f)
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+                                        .clickable {
+                                            if (inLib) {
+                                                startDupCheck(f)
+                                            } else {
+                                                if (on) picked.remove(f.key) else picked.add(f.key)
+                                                Haptics.tap(ctx)
+                                            }
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (inLib) {
+                                        Box(
+                                            Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(MaterialTheme.colorScheme.primary)
+                                                .padding(horizontal = 7.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                "已入库",
+                                                style = TextStyle(
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onPrimary
+                                                )
+                                            )
+                                        }
+                                    } else {
+                                        Box(
+                                            Modifier
+                                                .size(18.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    if (on) MaterialTheme.colorScheme.primary
+                                                    else MaterialTheme.colorScheme.surfaceVariant
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            if (on) {
+                                                Text(
+                                                    "✓",
+                                                    style = TextStyle(
+                                                        fontSize = 10.sp,
+                                                        color = MaterialTheme.colorScheme.onPrimary
+                                                    )
+                                                )
+                                            }
+                                        }
                                     }
-                                )
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            f.name,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            if (inLib) "已在书架里 · ${f.sizeLabel} · 点按处理"
+                                            else "${f.sizeLabel} · ${f.hint}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.outline,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -472,267 +622,85 @@ fun ScanImportScreen(
         }
     }
 
-    // 导入队列：逐个处理，遇到重复就停下问用户
-    var queue by remember { mutableStateOf<List<FoundBook>>(emptyList()) }
-    var dupState by remember { mutableStateOf<DupUi?>(null) }
-    var applyToAll by remember { mutableStateOf(false) }
-    var forcedMode by remember { mutableStateOf<AppViewModel.DupMode?>(null) }
-    var okCount by remember { mutableStateOf(0) }
-    var failCount by remember { mutableStateOf(0) }
-
-    LaunchedEffect(importing) {
-        if (!importing) return@LaunchedEffect
-        val byKey = files.associateBy { it.key }
-        queue = picked.toList().mapNotNull { byKey[it] }
-        okCount = 0
-        failCount = 0
-        forcedMode = null
-    }
-
-    // 从队列头部取一个处理
-    LaunchedEffect(queue, dupState, forcedMode) {
-        if (queue.isEmpty()) {
-            if (importing) {
-                importing = false
-                picked.clear()
-                val ok = okCount
-                val fail = failCount
-                message = "导入完成：成功 $ok 本" + if (fail > 0) "，失败 $fail 个" else ""
-                if (ok > 0) onDone()
-            }
-            return@LaunchedEffect
-        }
-        if (dupState != null) return@LaunchedEffect   // 等用户选
-
-        val found = queue.first()
-        val rest = queue.drop(1)
-        queue = rest
-
-        var parsed: com.novelforge.app.data.BookParser.Parsed? = null
-        withContext(Dispatchers.IO) {
-            parsed = runCatching {
-                BookParser.parse(BookScanner.readBytes(ctx, found), found.name)
-            }.getOrNull()
-        }
-        val p = parsed
-        if (p == null || p.chapters.isEmpty()) {
-            failCount++
-            return@LaunchedEffect
-        }
-
-        val title = found.name.substringBeforeLast('.')
-        val hit = vm.findDuplicate(p, title, found.name)
-        if (hit == null) {
-            vm.importParsed(p, title, found.name, com.novelforge.app.data.DuplicateFinder.fingerprintOf(p.chapters), null, null)
-            okCount++
-            return@LaunchedEffect
-        }
-
-        // 有重复：之前选过「全部应用」就直接按那个来
-        val mode = forcedMode
-        if (mode != null) {
-            val id = vm.importParsed(p, title, found.name, hit.second, hit.first, mode)
-            if (id.isNotBlank()) okCount++
-            return@LaunchedEffect
-        }
-        // 否则停下来问
-        dupState = DupUi(found, p, title, hit.first, hit.second)
-    }
-
-    // ——— 重复提示弹窗 ———
-    dupState?.let { d ->
+    // 重复导入的处理弹窗（点已入库行核对出真重复时）
+    dupPrompt?.let { (f, parsed, dup) ->
         androidx.compose.material3.AlertDialog(
-            onDismissRequest = { dupState = null; importing = false; queue = emptyList() },
-            title = {
-                Text(
-                    "书架已有《${d.verdict.existing.title}》",
-                    style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1A1A1A))
-                )
-            },
+            onDismissRequest = { dupPrompt = null },
+            title = { Text("这本书已经有了") },
             text = {
-                Column {
-                    Text(
-                        buildString {
-                            append("要导入的是《${d.title}》")
-                            append("\n")
-                            append(
-                                when {
-                                    d.verdict.sameContent && d.verdict.sameName -> "内容和文件名完全一样"
-                                    d.verdict.sameContent -> "内容完全一样，只是文件名不同"
-                                    else -> "文件名和格式一样"
-                                }
-                            )
-                            append("\n\n替换 = 用新文件覆盖书架上那本（阅读进度保留）\n跳过 = 不动书架\n重复导入 = 另外加一本，名字加（1）")
-                            val left = queue.size
-                            if (left > 0) append("\n\n后面还有 $left 个文件等着导入")
-                        },
-                        style = TextStyle(fontSize = 12.5.sp, color = Color(0xFF6B6B66), lineHeight = 19.sp)
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        androidx.compose.material3.Checkbox(
-                            checked = applyToAll,
-                            onCheckedChange = { applyToAll = it }
-                        )
-                        Text("后面的重复都这样处理", style = TextStyle(fontSize = 12.sp, color = Color(0xFF1A1A1A)))
-                    }
-                }
+                Text(
+                    "《${dup.title}》已在书架里——文件名、格式、内容都相同。" +
+                        "跳过 = 不导；覆盖 = 用这份替换书架里那本；重复导入 = 再存一本，名字自动加（1）。",
+                    style = MaterialTheme.typography.bodySmall
+                )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    if (applyToAll) forcedMode = AppViewModel.DupMode.KEEP_BOTH
-                    val id = vm.importParsed(d.parsed, d.title, d.found.name, d.fingerprint, d.verdict, AppViewModel.DupMode.KEEP_BOTH)
-                    if (id.isNotBlank()) okCount++
-                    dupState = null
-                    applyToAll = false
-                }) { Text("重复导入", color = Color(0xFF1A1A1A)) }
-            },
-            dismissButton = {
                 Row {
-                    TextButton(onClick = {
-                        if (applyToAll) forcedMode = AppViewModel.DupMode.SKIP
-                        dupState = null
-                        applyToAll = false
-                    }) { Text("跳过", color = Color(0xFF6B6B66)) }
-                    TextButton(onClick = {
-                        if (applyToAll) forcedMode = AppViewModel.DupMode.REPLACE
-                        val id = vm.importParsed(d.parsed, d.title, d.found.name, d.fingerprint, d.verdict, AppViewModel.DupMode.REPLACE)
-                        if (id.isNotBlank()) okCount++
-                        dupState = null
-                        applyToAll = false
-                    }) { Text("替换", color = Color(0xFFB4402F)) }
+                    androidx.compose.material3.TextButton(onClick = { dupPrompt = null }) {
+                        Text("跳过")
+                    }
+                    androidx.compose.material3.TextButton(onClick = {
+                        vm.overwriteImportedBook(dup.id, parsed, f.name, f.key)
+                        dupPrompt = null
+                        message = "已覆盖《${dup.title}》"
+                        Haptics.confirm(ctx)
+                    }) { Text("覆盖") }
+                    androidx.compose.material3.TextButton(onClick = {
+                        vm.importLocalBook(
+                            parsed, f.name.substringBeforeLast('.'), f.key,
+                            sourceName = f.name, dedupeTitle = true
+                        )
+                        dupPrompt = null
+                        message = "已作为副本导入（自动改名）"
+                        Haptics.confirm(ctx)
+                    }) { Text("重复导入") }
                 }
-            }
+            },
+            dismissButton = {}
         )
     }
-}
 
-/**
- * 扫描结果里的一行文件。
- * 已经入库的：整行压暗、勾选框换成「已入库」标记、点不动。
- */
-@Composable
-private fun FileRow(
-    f: FoundBook,
-    on: Boolean,
-    compact: Boolean = false,
-    onToggle: () -> Unit
-) {
-    val dim = f.inLibrary
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(if (compact) 14.dp else 16.dp))
-            .background(
-                when {
-                    dim -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-                    compact -> MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
-                    else -> MaterialTheme.colorScheme.surface
-                }
-            )
-            .clickable(enabled = !dim, onClick = onToggle)
-            .padding(horizontal = 14.dp, vertical = if (compact) 10.dp else 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 左侧标记：已入库 → 实心勾 + 「已入库」；否则正常勾选框
-        if (dim) {
-            Box(
-                Modifier
-                    .size(if (compact) 18.dp else 20.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "✓",
-                    style = TextStyle(
-                        fontSize = if (compact) 10.sp else 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                )
-            }
-        } else {
-            Box(
-                Modifier
-                    .size(if (compact) 18.dp else 20.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (on) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.surfaceVariant
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                if (on) {
-                    Text(
-                        "✓",
-                        style = TextStyle(
-                            fontSize = if (compact) 10.sp else 11.sp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    f.name,
-                    style = if (compact) MaterialTheme.typography.bodySmall
-                    else MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (compact) FontWeight.Normal else FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = if (dim) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f, fill = false)
-                )
-                if (dim) {
-                    Spacer(Modifier.width(6.dp))
-                    // 已入库标签：小胶囊，和文件名同一行，一眼能扫出来
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            "已入库",
-                            style = TextStyle(
-                                fontSize = 9.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontWeight = FontWeight.Medium
+    // 真正导入
+    LaunchedEffect(importing) {
+        if (!importing) return@LaunchedEffect
+        var ok = 0
+        var fail = 0
+        var dupSkipped = 0
+        // picked 存的是 FoundBook.key，先按 key 反查文件
+        val byKey = files.associateBy { it.key }
+        withContext(Dispatchers.IO) {
+            picked.toList().forEach { k ->
+                val found = byKey[k] ?: return@forEach
+                runCatching {
+                    val bytes = BookScanner.readBytes(ctx, found)
+                    val parsed = BookParser.parse(bytes, found.name)
+                    if (parsed.chapters.isEmpty()) {
+                        fail++
+                    } else if (vm.findDuplicateBook(found.name, parsed.chapters) != null) {
+                        // 没被标出来但三样都对上的（比如文件挪过位置），也别重复导
+                        dupSkipped++
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            vm.importLocalBook(
+                                parsed, found.name.substringBeforeLast('.'), found.key,
+                                sourceName = found.name
                             )
-                        )
+                        }
+                        ok++
                     }
-                }
+                }.onFailure { fail++ }
             }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                buildString {
-                    if (!compact) append("${f.ext.uppercase()} · ")
-                    append(f.sizeLabel)
-                    append(" · ")
-                    append(if (dim) "书架上已有" else f.hint)
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = if (dim) MaterialTheme.colorScheme.outline
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
+        importing = false
+        picked.clear()
+        message = "导入完成：成功 $ok 本" +
+            (if (dupSkipped > 0) "，跳过重复 $dupSkipped 本" else "") +
+            (if (fail > 0) "，失败 $fail 个" else "")
+        if (ok > 0) Haptics.confirm(ctx) else if (fail > 0) Haptics.warn(ctx)
+        // 书架上长按可改名
+        if (ok > 0) onDone()
     }
 }
-
-/** 批量导入时卡在某本书上，等用户决定怎么处理重复 */
-private data class DupUi(
-    val found: FoundBook,
-    val parsed: com.novelforge.app.data.BookParser.Parsed,
-    val title: String,
-    val verdict: com.novelforge.app.data.DuplicateFinder.Verdict,
-    val fingerprint: String
-)
 
 @Composable
 private fun FormatChip(

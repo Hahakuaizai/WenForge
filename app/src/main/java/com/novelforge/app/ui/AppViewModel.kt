@@ -42,6 +42,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val store = Store.shared(app)
 
+    init {
+        // 触感反馈的开关/强度先同步进 Haptics，设置页改了再由 setHaptics 更新
+        Haptics.configure(
+            store.data.settings.hapticsEnabled,
+            store.data.settings.hapticsStrength
+        )
+    }
+
     /** 数据快照：每次写操作后刷新，驱动 UI 重组 */
     // 用 neverEqualPolicy：数据是原地改的，默认的结构相等会让重组失效
     var data by mutableStateOf(store.data, androidx.compose.runtime.neverEqualPolicy())
@@ -645,75 +653,65 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         importStatus = ""
     }
 
-    /** 导入时的重复处理方式 */
-    enum class DupMode { REPLACE, SKIP, KEEP_BOTH }
-
-    /** 查一下这本书书架上有没有。没有重复返回 null */
-    fun findDuplicate(
-        parsed: com.novelforge.app.data.BookParser.Parsed,
-        titleOverride: String,
-        sourceName: String
-    ): Pair<com.novelforge.app.data.DuplicateFinder.Verdict, String>? {
-        val fp = com.novelforge.app.data.DuplicateFinder.fingerprintOf(parsed.chapters)
-        val wanted = titleOverride.ifBlank { parsed.title }.ifBlank { "未命名" }
-        val dup = com.novelforge.app.data.DuplicateFinder.find(
-            books = store.data.importedBooks,
-            incomingTitle = wanted,
-            incomingSourceName = sourceName,
-            incomingFingerprint = fp,
-            incomingChapterCount = parsed.chapters.size
-        ) ?: return null
-        return dup to fp
+    /** 导入本地 txt / md 文件 */
+    /** 整本书的内容指纹：每章标题+正文一起算 SHA-256 */
+    fun hashChapters(chapters: List<com.novelforge.app.data.ImportedChapter>): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        chapters.forEach { ch ->
+            md.update(ch.title.toByteArray(Charsets.UTF_8))
+            md.update(1)
+            md.update(ch.content.toByteArray(Charsets.UTF_8))
+            md.update(2)
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     /**
-     * 真正把书放进书架。
-     * @param mode 有重复时怎么处理；null 表示没重复，直接加
-     * @return 书的 id；跳过时返回空串
+     * 判重：文件名、文件格式、内容三样都一样才算重复。
+     * 老数据没记这三样（sourceHash 为空），永远判不出重复 —— 宁可漏判，不误伤。
      */
-    fun importParsed(
-        parsed: com.novelforge.app.data.BookParser.Parsed,
-        titleOverride: String,
-        sourceName: String,
-        fingerprint: String,
-        dup: com.novelforge.app.data.DuplicateFinder.Verdict?,
-        mode: DupMode?
-    ): String {
-        val wanted = titleOverride.ifBlank { parsed.title }.ifBlank { "未命名" }
-
-        if (dup != null) {
-            when (mode) {
-                DupMode.SKIP -> return ""
-                DupMode.REPLACE -> {
-                    // 原地替换内容，id 保留（书架位置、阅读进度都不动）
-                    val target = dup.existing
-                    target.title = wanted
-                    target.author = parsed.author.ifBlank { target.author }
-                    target.chapters = parsed.chapters.toMutableList()
-                    target.origin = "local"
-                    target.sourceName = sourceName.ifBlank { target.sourceName }
-                    target.fingerprint = fingerprint
-                    store.save()
-                    refresh()
-                    return target.id
-                }
-                DupMode.KEEP_BOTH, null -> { /* 往下按新书加 */ }
-            }
+    fun findDuplicateBook(
+        fileName: String,
+        chapters: List<com.novelforge.app.data.ImportedChapter>
+    ): ImportedBook? {
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        if (ext.isBlank() || chapters.isEmpty()) return null
+        val base = fileName.substringBeforeLast('.')
+        val hash = hashChapters(chapters)
+        return store.data.importedBooks.firstOrNull {
+            it.sourceHash == hash && it.sourceExt == ext &&
+                it.sourceName.substringBeforeLast('.') == base
         }
+    }
 
-        val finalTitle = if (dup != null) {
-            com.novelforge.app.data.DuplicateFinder.uniqueTitle(
-                wanted, store.data.importedBooks.map { it.title }
-            )
-        } else wanted
+    /** 书架里没被占用的名字：占了就往后加（1）（2） */
+    private fun uniqueImportedTitle(base: String): String {
+        val taken = (store.data.importedBooks.map { it.title } +
+            store.data.projects.map { it.title }).toSet()
+        if (base !in taken) return base
+        var n = 1
+        while ("$base（$n）" in taken) n++
+        return "$base（$n）"
+    }
 
+    fun importLocalBook(
+        parsed: com.novelforge.app.data.BookParser.Parsed,
+        titleOverride: String = "",
+        sourceKey: String = "",
+        sourceName: String = "",
+        dedupeTitle: Boolean = false
+    ): String {
+        var title = titleOverride.ifBlank { parsed.title }.ifBlank { "未命名" }
+        if (dedupeTitle) title = uniqueImportedTitle(title)
         val book = ImportedBook(
-            title = finalTitle,
+            title = title,
             author = parsed.author,
             chapters = parsed.chapters,
             origin = "local",
+            sourceKey = sourceKey,
             sourceName = sourceName,
-            fingerprint = fingerprint
+            sourceExt = sourceName.substringAfterLast('.', "").lowercase(),
+            sourceHash = hashChapters(parsed.chapters)
         )
         store.data.importedBooks.add(book)
         store.save()
@@ -721,32 +719,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return book.id
     }
 
-    /** 单文件导入的便捷入口：有重复就按 mode 处理（默认跳过） */
-    fun importLocalBook(
+    /** 覆盖：用新解析的内容替换书架里那本（书名、id、入库时间都不动） */
+    fun overwriteImportedBook(
+        id: String,
         parsed: com.novelforge.app.data.BookParser.Parsed,
-        titleOverride: String = "",
-        sourceName: String = "",
-        mode: DupMode = DupMode.SKIP
-    ): String {
-        val hit = findDuplicate(parsed, titleOverride, sourceName)
-        return importParsed(
-            parsed = parsed,
-            titleOverride = titleOverride,
-            sourceName = sourceName,
-            fingerprint = hit?.second ?: com.novelforge.app.data.DuplicateFinder.fingerprintOf(parsed.chapters),
-            dup = hit?.first,
-            mode = if (hit != null) mode else null
-        )
-    }
-
-    /** 批量删除书架上的书（novel = 自己写的，imported = 导入/下载的） */
-    fun deleteBooks(items: List<Pair<String, String>>) {
-        items.forEach { (kind, id) ->
-            when (kind) {
-                "novel" -> store.data.projects.removeAll { it.id == id }
-                else -> store.data.importedBooks.removeAll { it.id == id }
-            }
-        }
+        sourceName: String,
+        sourceKey: String = ""
+    ) {
+        val b = store.data.importedBooks.firstOrNull { it.id == id } ?: return
+        b.chapters = parsed.chapters
+        b.author = parsed.author
+        b.sourceName = sourceName
+        b.sourceExt = sourceName.substringAfterLast('.', "").lowercase()
+        b.sourceHash = hashChapters(parsed.chapters)
+        if (sourceKey.isNotBlank()) b.sourceKey = sourceKey
         store.save()
         refresh()
     }
@@ -760,6 +746,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 保存阅读器偏好 */
+    /** 触感反馈：开关 + 强度（设置页即时生效，不走「保存设置」按钮） */
+    fun setHaptics(enabled: Boolean, strength: Float) {
+        val st = store.data.settings
+        st.hapticsEnabled = enabled
+        st.hapticsStrength = strength
+        store.save()
+        data = store.data
+        Haptics.configure(enabled, strength)
+    }
+
     fun saveReaderPrefs(fontSize: Float, lineHeight: Float, theme: String, pageMode: String) {
         val st = store.data.settings
         st.readerFontSize = fontSize
@@ -836,6 +832,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var updateAvailable by mutableStateOf(false)
         private set
 
+    /** GitHub Releases 渠道查到的最新版（和局域网的比，谁新用谁） */
+    var ghUpdate by mutableStateOf<UpdateEntry?>(null)
+        private set
+
+    /** 两个渠道里最新的那个条目；directUrl 非空 = 来自 GitHub */
+    val latestUpdate: UpdateEntry?
+        get() = listOfNotNull(updateEntries.firstOrNull(), ghUpdate)
+            .maxByOrNull { it.versionCode }
+
+    // 一键更新：检查发现新版后先在后台把 APK 下好，点「立即更新」直接装，不用再等
+    private var preparedApk: java.io.File? = null
+    private var preparedCode: Int = -1
+
     fun currentVersion(): Pair<String, Int> = UpdateClient.installedVersion(getApplication())
 
     fun setUpdateServer(url: String) {
@@ -844,9 +853,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         data = store.data
     }
 
-    /** 检查更新：拉 manifest，顺手把记录存进设置（只留 10 条）。
-     *  silent=true 是启动时的自动检查：不打扰、不写状态文字，连不上就当无事发生，
-     *  只在确实有新版本时把 updateAvailable 置真，主界面会弹一次提示。 */
+    /** 检查更新：两个渠道都查 —— 自己的电脑（局域网 manifest）和 GitHub Releases，
+     *  谁的版本号新就用谁。silent=true 是启动时的自动检查：不写状态文字、连不上不打扰，
+     *  只在确实有新版本时把 updateAvailable 置真，并顺手在后台预下载。 */
     fun checkUpdates(silent: Boolean = false) {
         val url = store.data.settings.updateServerUrl.ifBlank { "http://127.0.0.1:8787" }
         if (!silent) {
@@ -854,34 +863,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             updateStatus = "正在连 ${url} …"
         }
         viewModelScope.launch {
-            runCatching { UpdateClient.fetch(url) }.fold(
-                onSuccess = { list ->
-                    updateEntries = list
-                    val (name, code) = currentVersion()
-                    val latest = list.firstOrNull()
-                    store.data.settings.updateHistory = list.take(10).map { e ->
-                        com.novelforge.app.data.UpdateRecord(
-                            versionName = e.versionName,
-                            versionCode = e.versionCode,
-                            time = e.time,
-                            notes = e.notes,
-                            installed = e.versionCode <= code
-                        )
-                    }
-                    store.save()
-                    data = store.data
-                    updateAvailable = latest != null && latest.versionCode > code
-                    if (!silent) {
-                        updateStatus = when {
-                            latest == null -> "服务器上还没有版本"
-                            latest.versionCode > code -> "有新版本 ${latest.versionName}（当前 $name）"
-                            else -> "已经是最新的 $name"
-                        }
-                    }
-                },
-                onFailure = { if (!silent) updateStatus = "❌ ${it.message}" }
-            )
-            if (!silent) updateChecking = false
+            // 渠道一：自己的电脑
+            val lan = runCatching { UpdateClient.fetch(url) }.getOrNull()
+            if (lan != null) {
+                updateEntries = lan
+                val (_, cur) = currentVersion()
+                store.data.settings.updateHistory = lan.take(10).map { e ->
+                    com.novelforge.app.data.UpdateRecord(
+                        versionName = e.versionName,
+                        versionCode = e.versionCode,
+                        time = e.time,
+                        notes = e.notes,
+                        installed = e.versionCode <= cur
+                    )
+                }
+                store.save()
+                data = store.data
+            }
+            // 渠道二：GitHub Releases（电脑不开着也能更）
+            runCatching { com.novelforge.app.net.GithubUpdate.fetchLatest() }
+                .getOrNull()?.let { ghUpdate = it }
+
+            val (name, code) = currentVersion()
+            val latest = latestUpdate
+            updateAvailable = latest != null && latest.versionCode > code
+            if (latest != null && latest.versionCode > code) {
+                prepareInBackground(latest, url)
+            }
+            if (!silent) {
+                updateStatus = when {
+                    latest == null ->
+                        if (lan == null) "❌ 电脑连不上，GitHub 也没查到（没网？）"
+                        else "服务器上还没有版本"
+                    latest.versionCode > code ->
+                        "有新版本 ${latest.versionName}（当前 $name）" +
+                            if (latest.directUrl.isNotBlank()) " · 来自 GitHub" else ""
+                    else -> "已经是最新的 $name"
+                }
+                updateChecking = false
+            }
+        }
+    }
+
+    /** 后台预下载：点「立即更新」时不用再等下载 */
+    private fun prepareInBackground(entry: UpdateEntry, serverUrl: String) {
+        if (preparedCode == entry.versionCode && preparedApk?.exists() == true) return
+        preparedCode = entry.versionCode
+        val ctx = getApplication<Application>()
+        viewModelScope.launch {
+            runCatching { UpdateClient.download(serverUrl, entry, ctx) {} }
+                .onSuccess { preparedApk = it }
         }
     }
 
@@ -909,6 +940,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!UpdateClient.canInstall(ctx)) {
             updateStatus = "先去允许「安装未知应用」，再回来点一次"
             UpdateClient.askInstallPermission(ctx)
+            return
+        }
+        val ready = preparedApk?.takeIf { preparedCode == entry.versionCode && it.exists() }
+        if (ready != null) {
+            updateStatus = "下载好了，接着点「安装」"
+            UpdateClient.install(ctx, ready)
             return
         }
         updateDownloading = true

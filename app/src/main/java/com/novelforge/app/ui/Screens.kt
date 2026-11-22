@@ -598,11 +598,36 @@ fun CreateScreen(
 
 // ============================== 供应商列表 ==============================
 
+/** 「生成设置」入口卡（原「全局设置」页：分阶段模型、记忆、提示词都在里面） */
+@Composable
+private fun GenSettingsEntry(onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("生成设置", fontWeight = FontWeight.SemiBold)
+            Text(
+                "分阶段模型、记忆、提示词、震动、更新与存储",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.outline)
+    }
+}
+
 @Composable
 fun ProvidersScreen(
     vm: AppViewModel,
     onEdit: (String?) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenGenSettings: () -> Unit = {}
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -666,6 +691,8 @@ fun ProvidersScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.height(18.dp))
+                GenSettingsEntry(onOpenGenSettings)
             }
             return@Scaffold
         }
@@ -673,6 +700,7 @@ fun ProvidersScreen(
             Modifier.padding(pad).padding(horizontal = 18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            item { GenSettingsEntry(onOpenGenSettings) }
             item {
                 Text(
                     "开关控制这套配置要不要出现在写作的切换列表里；点卡片展开，能单独关掉里面的模型。",
@@ -1559,7 +1587,7 @@ fun SettingsScreen(
         }
     }
 
-    Scaffold(topBar = { BackBar("全局设置", onBack) }) { pad ->
+    Scaffold(topBar = { BackBar("生成设置", onBack) }) { pad ->
         Column(
             Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -1618,7 +1646,16 @@ fun SettingsScreen(
                             usdToCny = rate.toDoubleOrNull() ?: 7.2,
                             displayCurrency = current.displayCurrency,
                             contextBudgetChars = budget,
-                            memoryEnabled = memoryOn
+                            memoryEnabled = memoryOn,
+                            hapticsEnabled = current.hapticsEnabled,
+                            hapticsStrength = current.hapticsStrength,
+                            // 下面这些在别的页面改，这里原样带过，别被默认值冲掉
+                            readerFontSize = current.readerFontSize,
+                            readerLineHeight = current.readerLineHeight,
+                            readerTheme = current.readerTheme,
+                            readerPageMode = current.readerPageMode,
+                            updateServerUrl = current.updateServerUrl,
+                            updateHistory = current.updateHistory
                         )
                     )
                     onBack()
@@ -3234,7 +3271,7 @@ fun ImportScreen(
                     localMsg = "没解析出章节，可能格式不支持"
                 } else {
                     // 先弹窗让用户确认/修改书名
-                    pendingImport = parsed to fileName.substringBeforeLast('.')
+                    pendingImport = parsed to fileName
                 }
             }
         } catch (e: Exception) {
@@ -3242,15 +3279,26 @@ fun ImportScreen(
         }
     }
 
-    pendingImport?.let { (parsed, fallback) ->
+    pendingImport?.let { (parsed, fileName) ->
         var titleInput by remember(parsed) {
-            mutableStateOf(parsed.title.ifBlank { fallback })
+            mutableStateOf(parsed.title.ifBlank { fileName.substringBeforeLast('.') })
         }
+        // 判重：文件名、格式、内容都一样才算
+        val dup = remember(parsed) { vm.findDuplicateBook(fileName, parsed.chapters) }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { pendingImport = null },
-            title = { Text("确认书名") },
+            title = { Text(if (dup != null) "这本书已经有了" else "确认书名") },
             text = {
                 Column {
+                    if (dup != null) {
+                        Text(
+                            "书架里已有一本《${dup.title}》——文件名、格式、内容都相同。" +
+                                "跳过 = 不导；覆盖 = 用这份替换书架里那本；重复导入 = 再存一本，名字自动加（1）。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    }
                     AppTextField(
                         value = titleInput,
                         onValueChange = { titleInput = it },
@@ -3267,15 +3315,41 @@ fun ImportScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val id = vm.importLocalBook(parsed, titleInput.trim())
-                    localMsg = "已导入《${titleInput.ifBlank { parsed.title }}》共 ${parsed.chapters.size} 章"
-                    pendingImport = null
-                    onOpenBook(id)
-                }) { Text("导入") }
+                if (dup != null) {
+                    Row {
+                        TextButton(onClick = {
+                            localMsg = "已跳过重复的《${dup.title}》"
+                            pendingImport = null
+                        }) { Text("跳过") }
+                        TextButton(onClick = {
+                            vm.overwriteImportedBook(dup.id, parsed, fileName)
+                            localMsg = "已覆盖《${dup.title}》"
+                            pendingImport = null
+                            onOpenBook(dup.id)
+                        }) { Text("覆盖") }
+                        TextButton(onClick = {
+                            val id = vm.importLocalBook(
+                                parsed, titleInput.trim(),
+                                sourceName = fileName, dedupeTitle = true
+                            )
+                            localMsg = "已作为副本导入《${titleInput.ifBlank { parsed.title }}》"
+                            pendingImport = null
+                            onOpenBook(id)
+                        }) { Text("重复导入") }
+                    }
+                } else {
+                    TextButton(onClick = {
+                        val id = vm.importLocalBook(parsed, titleInput.trim(), sourceName = fileName)
+                        localMsg = "已导入《${titleInput.ifBlank { parsed.title }}》共 ${parsed.chapters.size} 章"
+                        pendingImport = null
+                        onOpenBook(id)
+                    }) { Text("导入") }
+                }
             },
             dismissButton = {
-                TextButton(onClick = { pendingImport = null }) { Text("取消") }
+                if (dup == null) {
+                    TextButton(onClick = { pendingImport = null }) { Text("取消") }
+                }
             }
         )
     }

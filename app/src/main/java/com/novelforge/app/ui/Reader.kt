@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -50,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -144,6 +147,19 @@ fun ReaderScreen(
         )
     }
     val scope = rememberCoroutineScope()
+    val readerCtx = androidx.compose.ui.platform.LocalContext.current
+    var showSearch by remember { mutableStateOf(false) }
+    // 跳转请求（章序号 to 第几次）：目录和搜索共用，三种翻页模式都认
+    var jumpRequest by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    val scrollListState = rememberLazyListState()
+
+    // 滚动模式的跳转（另外两种模式在各自的 pager 旁边处理）
+    androidx.compose.runtime.LaunchedEffect(jumpRequest) {
+        val jr = jumpRequest ?: return@LaunchedEffect
+        if (pageMode == "scroll") {
+            runCatching { scrollListState.animateScrollToItem(jr.first) }
+        }
+    }
 
     val theme = readerThemes.firstOrNull { it.key == themeKey } ?: readerThemes[1]
 
@@ -167,6 +183,13 @@ fun ReaderScreen(
                     initialPage = chapter.coerceIn(0, book.chapters.size - 1),
                     pageCount = { book.chapters.size }
                 )
+                androidx.compose.runtime.LaunchedEffect(jumpRequest) {
+                    jumpRequest?.let {
+                        runCatching {
+                            pager.animateScrollToPage(it.first.coerceIn(0, book.chapters.size - 1))
+                        }
+                    }
+                }
                 val appCtx = androidx.compose.ui.platform.LocalContext.current
                 var lastPage by remember { mutableIntStateOf(-1) }
                 androidx.compose.runtime.LaunchedEffect(pager.currentPage) {
@@ -200,6 +223,18 @@ fun ReaderScreen(
                     val perPage = (charsPerLine * linesPerPage).coerceAtLeast(200)
                     val pages = remember(book, perPage) { paginate(book.chapters, perPage) }
                     val pager = rememberPagerState(pageCount = { pages.size })
+                    androidx.compose.runtime.LaunchedEffect(jumpRequest) {
+                        val jr = jumpRequest ?: return@LaunchedEffect
+                        var ordinal = -1
+                        var target = 0
+                        for ((pi, pg) in pages.withIndex()) {
+                            if (pg.chapterTitle != null) {
+                                ordinal++
+                                if (ordinal == jr.first) { target = pi; break }
+                            }
+                        }
+                        runCatching { pager.animateScrollToPage(target) }
+                    }
                     val appCtx = androidx.compose.ui.platform.LocalContext.current
                     var lastPage by remember { mutableIntStateOf(-1) }
                     androidx.compose.runtime.LaunchedEffect(pager.currentPage) {
@@ -244,7 +279,7 @@ fun ReaderScreen(
                 }
             }
             else -> {
-                val listState = rememberLazyListState()
+                val listState = scrollListState
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -324,6 +359,26 @@ fun ReaderScreen(
                     )
                 }
             }
+            val qsrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(theme.fg.copy(alpha = 0.06f))
+                    .pressScale(qsrc, 0.9f)
+                    .clickable(interactionSource = qsrc, indication = null) {
+                        showSearch = true
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = "搜索",
+                    modifier = Modifier.size(18.dp),
+                    tint = theme.fg
+                )
+            }
+            Spacer(Modifier.width(8.dp))
             val tsrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             Box(
                 Modifier
@@ -377,9 +432,30 @@ fun ReaderScreen(
                 theme = theme,
                 onPick = {
                     chapter = it
+                    jumpRequest = it to ((jumpRequest?.second ?: 0) + 1)
                     showToc = false
+                    Haptics.select(readerCtx)
                 },
                 onClose = { showToc = false }
+            )
+        }
+
+        // 搜索面板
+        AnimatedVisibility(
+            visible = showSearch,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            ReaderSearchSheet(
+                chapters = book.chapters,
+                theme = theme,
+                onPick = {
+                    chapter = it
+                    jumpRequest = it to ((jumpRequest?.second ?: 0) + 1)
+                    showSearch = false
+                    Haptics.select(readerCtx)
+                },
+                onClose = { showSearch = false }
             )
         }
 
@@ -726,6 +802,217 @@ private fun TocSheet(
                                 Spacer(Modifier.width(8.dp))
                                 Text("读到这里", style = MaterialTheme.typography.labelSmall, color = accent)
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── 本书搜索（正文 / 章节名 / 卷名）────────────────────────────
+
+private data class BookSearchHit(
+    val chapterIndex: Int,
+    /** 卷名 / 章节名 / 正文 */
+    val kind: String,
+    val chapterTitle: String,
+    val snippet: String,
+    /** 正文命中次数（标题类为 0） */
+    val count: Int
+)
+
+private fun searchInBook(chapters: List<ReaderChapter>, q: String): List<BookSearchHit> {
+    val out = mutableListOf<BookSearchHit>()
+    val volRe = Regex("""第[0-9一二三四五六七八九十百千零两]+[卷部集篇]""")
+    chapters.forEachIndexed { i, ch ->
+        // 章节名 / 卷名（卷名复用目录的拆分规则 volumeOf）
+        val vol = volumeOf(ch.title)
+        if (vol != null && vol.contains(q, ignoreCase = true)) {
+            out.add(BookSearchHit(i, "卷名", ch.title, vol, 0))
+        } else if (ch.title.contains(q, ignoreCase = true)) {
+            out.add(BookSearchHit(i, "章节名", ch.title, ch.title, 0))
+        }
+        // 正文：数次数 + 取首次命中处的片段
+        val content = ch.content
+        var count = 0
+        var firstAt = -1
+        var from = 0
+        while (count < 200) {
+            val at = content.indexOf(q, from, ignoreCase = true)
+            if (at < 0) break
+            if (firstAt < 0) firstAt = at
+            count++
+            from = at + q.length
+        }
+        if (count > 0) {
+            // 首次命中所在的整行若是卷标题行，单独给一条「卷名」
+            val lineStart = content.lastIndexOf('\n', firstAt) + 1
+            val nl = content.indexOf('\n', firstAt)
+            val lineEnd = if (nl < 0) content.length else nl
+            val line = content.substring(lineStart, lineEnd).trim()
+            if (line.length <= 30 && volRe.containsMatchIn(line)) {
+                out.add(BookSearchHit(i, "卷名", ch.title, line, 0))
+            }
+            val s = maxOf(0, firstAt - 26)
+            val e = minOf(content.length, firstAt + q.length + 26)
+            val snippet = (if (s > 0) "…" else "") +
+                content.substring(s, e).replace('\n', ' ') +
+                (if (e < content.length) "…" else "")
+            out.add(BookSearchHit(i, "正文", ch.title, snippet, count))
+        }
+        if (out.size > 300) return out
+    }
+    return out
+}
+
+@Composable
+private fun ReaderSearchSheet(
+    chapters: List<ReaderChapter>,
+    theme: ReaderTheme,
+    onPick: (Int) -> Unit,
+    onClose: () -> Unit
+) {
+    val panelBg = if (theme.dark) Color(0xFF1B1E22) else Color.White
+    val fg = if (theme.dark) Color(0xFFD5D8DC) else Color(0xFF14161A)
+    val muted = if (theme.dark) Color(0xFF868B92) else Color(0xFF8A8F96)
+    val accent = if (theme.dark) Color(0xFF7FA8D9) else Color(0xFF3A6EA5)
+
+    var query by remember { mutableStateOf("") }
+    var hits by remember { mutableStateOf<List<BookSearchHit>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+
+    androidx.compose.runtime.LaunchedEffect(query) {
+        val q = query.trim()
+        if (q.isEmpty()) {
+            hits = emptyList()
+            searching = false
+            return@LaunchedEffect
+        }
+        searching = true
+        kotlinx.coroutines.delay(220)
+        hits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            searchInBook(chapters, q)
+        }
+        searching = false
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.32f))
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null
+            ) { onClose() }
+    ) {
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .background(panelBg)
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BasicTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 15.sp, color = fg),
+                    cursorBrush = SolidColor(accent),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(fg.copy(alpha = 0.06f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    decorationBox = { inner ->
+                        Box {
+                            if (query.isEmpty()) {
+                                Text(
+                                    "搜正文、章节名、卷名",
+                                    style = TextStyle(fontSize = 15.sp, color = muted)
+                                )
+                            }
+                            inner()
+                        }
+                    }
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "关闭",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent,
+                    modifier = Modifier
+                        .clickable { onClose() }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+            Text(
+                when {
+                    query.isBlank() -> "在《${chapters.size} 章里找"
+                    searching -> "搜索中…"
+                    hits.isEmpty() -> "没找到"
+                    else -> "找到 ${hits.size} 条"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = muted,
+                modifier = Modifier.padding(start = 20.dp, bottom = 6.dp)
+            )
+            Box(Modifier.fillMaxWidth().height(1.dp).background(muted.copy(alpha = 0.22f)))
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)
+            ) {
+                items(hits) { hit ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(hit.chapterIndex) }
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(accent.copy(alpha = 0.12f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                hit.kind,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = accent
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                hit.snippet,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = fg,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                hit.chapterTitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (hit.count > 0) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "${hit.count} 处",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = muted
+                            )
                         }
                     }
                 }

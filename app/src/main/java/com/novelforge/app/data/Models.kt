@@ -134,6 +134,10 @@ data class AppSettings(
     var contextBudgetChars: Int = 6000,
     /** 记忆系统开关：关了就退回只带上一章结尾的老模式 */
     var memoryEnabled: Boolean = true,
+    /** 触感反馈开关（全局设置里可关） */
+    var hapticsEnabled: Boolean = true,
+    /** 触感强度倍率：0.5 轻 / 1.0 标准 / 1.5 强 */
+    var hapticsStrength: Float = 1.0f,
     // —— 阅读器偏好 ——
     var readerFontSize: Float = 17f,
     /** 行距倍数 */
@@ -236,10 +240,14 @@ data class ImportedBook(
     var pendingChapters: List<PendingChapter> = emptyList(),
     /** 书源 id（qqxs / qbtr / generic） */
     var sourceId: String = "",
-    /** 来源文件名（导入本地文件时记下，重复检测用） */
+    /** 本地导入时源文件的键（路径或 uri）：扫描页靠它标「已入库」，老数据为空 */
+    var sourceKey: String = "",
+    /** 原文件名、格式（扩展名）、内容指纹（SHA-256）：三样都对上才算重复导入，老数据为空 */
     var sourceName: String = "",
     /** 内容指纹：章节标题+字数算出来的短哈希，判断是不是同一本书 */
     var fingerprint: String = "",
+    var sourceExt: String = "",
+    var sourceHash: String = "",
     val createdAt: Long = System.currentTimeMillis()
 ) {
     val totalWords: Int get() = chapters.sumOf { it.content.length }

@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -43,7 +42,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -152,8 +150,6 @@ fun ShelfScreen(
     var currentBook by remember { mutableStateOf<ShelfItem?>(null) }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
     var showFilter by remember { mutableStateOf(false) }
-    // 批量管理
-    var manageOpen by remember { mutableStateOf(false) }
 
     val novels = vm.data.projects.map {
         ShelfItem(
@@ -269,26 +265,6 @@ fun ShelfScreen(
                             Icon(
                                 Icons.Default.Edit,
                                 contentDescription = "编辑这本书",
-                                modifier = Modifier.size(17.dp),
-                                tint = InkBlack
-                            )
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        val msrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                        Box(
-                            Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(Color.White)
-                                .pressScale(msrc, 0.9f)
-                                .clickable(interactionSource = msrc, indication = null) {
-                                    manageOpen = true
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "批量管理",
                                 modifier = Modifier.size(17.dp),
                                 tint = InkBlack
                             )
@@ -689,199 +665,6 @@ fun ShelfScreen(
             }
         )
     }
-
-    // ——— 批量管理：勾选多本一起删 ———
-    if (manageOpen) {
-        ShelfManageSheet(
-            allItems = shown,
-            onDismiss = { manageOpen = false },
-            onDelete = { picked ->
-                vm.deleteBooks(picked.map { it.kind to it.id })
-                manageOpen = false
-            }
-        )
-    }
-}
-
-/**
- * 批量管理面板：列出当前筛选下的所有书，勾选后一起删。
- * 全选 / 只选导入 / 只选网文 都有快捷按钮。
- */
-@Composable
-private fun ShelfManageSheet(
-    allItems: List<ShelfItem>,
-    onDismiss: () -> Unit,
-    onDelete: (List<ShelfItem>) -> Unit
-) {
-    val picked = remember { mutableStateListOf<String>() }
-    var confirm by remember { mutableStateOf(false) }
-
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.82f)
-                .clip(RoundedCornerShape(24.dp))
-                .background(PaperWhite)
-                .padding(horizontal = 18.dp, vertical = 18.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "批量管理",
-                        style = TextStyle(fontSize = 19.sp, fontWeight = FontWeight.Bold, color = InkBlack)
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "已选 ${picked.size} / ${allItems.size} 本",
-                        style = TextStyle(fontSize = 11.5.sp, color = InkGray)
-                    )
-                }
-                TextButton(onClick = onDismiss) { Text("关闭", color = InkGray) }
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BulkChip(if (picked.size == allItems.size && allItems.isNotEmpty()) "取消全选" else "全选") {
-                    if (picked.size == allItems.size && allItems.isNotEmpty()) picked.clear()
-                    else {
-                        picked.clear()
-                        picked.addAll(allItems.map { it.id })
-                    }
-                }
-                BulkChip("只选导入") {
-                    picked.clear()
-                    picked.addAll(allItems.filter { it.kind == "imported" && it.origin != "crawl" }.map { it.id })
-                }
-                BulkChip("只选网文") {
-                    picked.clear()
-                    picked.addAll(allItems.filter { it.origin == "crawl" }.map { it.id })
-                }
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            androidx.compose.foundation.lazy.LazyColumn(
-                Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                items(allItems, key = { it.kind + "_" + it.id }) { it ->
-                    val on = it.id in picked
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(if (on) Color(0xFFF4F1EA) else Color.White)
-                            .clickable {
-                                if (on) picked.remove(it.id) else picked.add(it.id)
-                            }
-                            .padding(horizontal = 13.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            Modifier
-                                .size(19.dp)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(if (on) InkBlack else Color(0xFFE8E6E0)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (on) Text("✓", style = TextStyle(fontSize = 12.sp, color = Color.White))
-                        }
-                        Spacer(Modifier.width(11.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                it.title.ifBlank { "未命名" },
-                                style = TextStyle(fontSize = 14.sp, color = InkBlack, fontWeight = FontWeight.Medium),
-                                maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                buildString {
-                                    append(
-                                        when {
-                                            it.kind == "novel" -> "我写的"
-                                            it.origin == "crawl" -> "网文"
-                                            else -> "导入"
-                                        }
-                                    )
-                                    append(" · ${it.chapters} 章 · ${com.novelforge.app.data.WordCount.label(it.words)}")
-                                },
-                                style = TextStyle(fontSize = 11.sp, color = InkGray)
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(if (picked.isEmpty()) Color(0xFFE8E6E0) else Color(0xFFB4402F))
-                    .clickable(enabled = picked.isNotEmpty()) { confirm = true }
-                    .padding(vertical = 14.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    if (picked.isEmpty()) "选几本再删" else "删除选中的 ${picked.size} 本",
-                    style = TextStyle(
-                        fontSize = 14.5.sp,
-                        color = if (picked.isEmpty()) InkGray else Color.White,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                )
-            }
-        }
-    }
-
-    if (confirm) {
-        val victims = allItems.filter { it.id in picked }
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            title = {
-                Text(
-                    "删掉 ${victims.size} 本？",
-                    style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, color = InkBlack)
-                )
-            },
-            text = {
-                Text(
-                    buildString {
-                        append(victims.take(4).joinToString("、") { "《${it.title.ifBlank { "未命名" }}》" })
-                        if (victims.size > 4) append(" 等")
-                        append("\n\n正文和章节都会一起删掉，删了找不回来。")
-                    },
-                    style = TextStyle(fontSize = 12.sp, color = InkGray, lineHeight = 18.sp)
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirm = false
-                    onDelete(victims)
-                }) { Text("删除", color = Color(0xFFB4402F)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirm = false }) { Text("取消", color = InkBlack) }
-            }
-        )
-    }
-}
-
-@Composable
-private fun BulkChip(label: String, onTap: () -> Unit) {
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color.White)
-            .border(1.dp, HairLine, RoundedCornerShape(12.dp))
-            .clickable(onClick = onTap)
-            .padding(horizontal = 12.dp, vertical = 7.dp)
-    ) {
-        Text(label, style = TextStyle(fontSize = 12.sp, color = InkBlack))
-    }
 }
 
 @Composable
@@ -979,13 +762,22 @@ private fun BookCarousel(
         }
     }
 
-    BoxWithConstraints(Modifier.fillMaxWidth().height(400.dp)) {
+    BoxWithConstraints(
+        Modifier.fillMaxWidth()
+    ) {
+        // 横屏时压低展示面，不然整本书塞不下
+        val boxH = if (maxWidth > maxHeight) 330.dp else 400.dp
         val Wdp = maxWidth.value
+        val landscape = maxWidth > maxHeight
         val spineDp = (Wdp * 0.043f).coerceIn(14f, 18f)
-        val coverDp = (Wdp * 0.32f).coerceIn(100f, 128f)
+        // 横屏高度紧：封面封顶 106dp，不然整本（基线+书高）塞不进 330dp 的展示面
+        val coverRaw = (Wdp * 0.32f).coerceIn(100f, 128f)
+        val coverDp = if (landscape) minOf(coverRaw, 106f) else coverRaw
         val HDp = (coverDp - 20f) * 166f / 118f + 54f
         val pitchDp = spineDp + 11f
         val footprintDp = spineDp + coverDp * 0.66f
+        // 可见槽位范围按宽度算：竖屏约 ±6，横屏全宽能排到 ±19，展示面自然拉长
+        val rangeF = (Wdp / 2f + footprintDp) / pitchDp + 2f
         val baseYDp = 0.30f * coverDp + 0.60f * HDp + 14f
         val startXDp = Wdp / 2f - footprintDp / 2f + coverDp * 0.84f * 0.66f
 
@@ -1042,7 +834,7 @@ private fun BookCarousel(
             var bestAd = Float.MAX_VALUE
             for (i in books.indices) {
                 val ad = kotlin.math.abs(relOfStatic(i, p, n))
-                if (ad > 6.2f || ad >= bestAd) continue
+                if (ad > rangeF || ad >= bestAd) continue
                 val (bx, by) = bookOrigin(i, p, 1.45f)
                 if (pointInPolygon(px - bx, py - by, poly)) {
                     best = i
@@ -1055,7 +847,8 @@ private fun BookCarousel(
         // 手势统一在这一层处理：跟手拖动 / 惯性 / 点击命中 / 长按命中
         Box(
             Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .height(boxH)
                 .pointerInput(n, pitch) {
                     val slop = viewConfiguration.touchSlop
                     awaitEachGesture {
@@ -1106,6 +899,7 @@ private fun BookCarousel(
                                     if (idx != null) {
                                         val d = relOfStatic(idx, pos, n)
                                         if (kotlin.math.abs(d) < 0.5f) {
+                                            Haptics.tap(appCtx)
                                             onOpen(books[idx])
                                         } else {
                                             Haptics.select(appCtx)
@@ -1122,52 +916,67 @@ private fun BookCarousel(
         )
 
         // 地板软阴影：留在未抽出的基座位置（原作同款，书抽出来影子不动）
+        // 路径和渐变只算一次（局部坐标），每帧只做平移 —— 滑动时不重建对象、不重算
         val densF = density.density
-        Canvas(Modifier.fillMaxSize()) {
+        val shadowPath = remember(spine, cover) {
             val dxs = cover * 0.66f
             val dys = cover * -0.30f
-            val ink = Color(0xFF2B2822)
+            Path().apply {
+                moveTo(0f, 0f)
+                lineTo(spine, 1.4f * densF)
+                lineTo(spine + dxs, 1.4f * densF + dys)
+                lineTo(dxs, dys)
+                lineTo(dxs - 10f * densF, dys + 10f * densF)
+                lineTo(-10f * densF, 10f * densF)
+                close()
+            }
+        }
+        val shadowBrush = remember(spine, cover) {
+            val dxs = cover * 0.66f
+            val dys = cover * -0.30f
+            // 渐变按原作 SVG 的 objectBoundingBox 对角线：包围盒左上 → 右下，0.13 → 0
+            Brush.linearGradient(
+                listOf(Color(0xFF2B2822).copy(alpha = 0.13f), Color(0xFF2B2822).copy(alpha = 0f)),
+                start = Offset(-10f * densF, dys),
+                end = Offset(spine + dxs, 10f * densF)
+            )
+        }
+        Canvas(Modifier.fillMaxSize()) {
             for (i in books.indices) {
                 val d = relOfStatic(i, pos, n)
-                if (kotlin.math.abs(d) > 6.2f) continue
+                if (kotlin.math.abs(d) > rangeF) continue
                 val sx = startX + d * pitch
                 val sy = baseY + railY(d) + H
-                val shadow = Path().apply {
-                    moveTo(sx, sy)
-                    lineTo(sx + spine, sy + 1.4f * densF)
-                    lineTo(sx + spine + dxs, sy + 1.4f * densF + dys)
-                    lineTo(sx + dxs, sy + dys)
-                    lineTo(sx + dxs - 10f * densF, sy + dys + 10f * densF)
-                    lineTo(sx - 10f * densF, sy + 10f * densF)
-                    close()
-                }
-                drawPath(
-                    shadow,
-                    Brush.linearGradient(
-                        listOf(ink.copy(alpha = 0.10f), ink.copy(alpha = 0f)),
-                        start = Offset(sx, sy),
-                        end = Offset(sx + dxs, sy + dys)
-                    )
-                )
+                drawContext.canvas.save()
+                drawContext.canvas.translate(sx, sy)
+                drawPath(shadowPath, shadowBrush)
+                drawContext.canvas.restore()
             }
         }
 
         // 画书：按从左到右的顺序（原作的固定绘制序：右边的书压住左边书的封面右缘，
         // 每本书的书脊都露在外面；中心书不靠置顶，靠抽出位移自己站出来）
-        val enterV = enter.value
-        val order = books.indices.sortedBy { relOfStatic(it, pos, n) }
+        // 流畅度关键：每本书渲染成一个图层（内容不变就不重绘），位置在绘制期用
+        // graphicsLayer 平移 —— 滑动时只动图层，不再每帧给几十本书重新布局+重绘封面。
+        // 绘制序按整数槽位算（跨槽才变），精确位置在图层里读实时 pos。
+        val slotPos = pos.roundToInt().toFloat()
+        val order = books.indices
+            .filter { kotlin.math.abs(relOfStatic(it, slotPos, n)) <= rangeF + 1f }
+            .sortedBy { relOfStatic(it, slotPos, n) }
+        val bookBoxW = with(density) { (spine + cover * 0.66f).toDp() }
+        val bookBoxH = with(density) { (H + cover * 0.30f + 10f).toDp() }
         order.forEach { i ->
-            val d = relOfStatic(i, pos, n)
-            if (kotlin.math.abs(d) > 6.2f) return@forEach
-
-            val (x, y) = bookOrigin(i, pos, enterV)
             val book = books[i]
 
             Box(
                 Modifier
-                    .offset { androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()) }
-                    .width(with(density) { (spine + cover * 0.66f).toDp() })
-                    .height(with(density) { (H + cover * 0.30f + 10f).toDp() })
+                    .width(bookBoxW)
+                    .height(bookBoxH)
+                    .graphicsLayer {
+                        val (x, y) = bookOrigin(i, pos, enter.value)
+                        translationX = x
+                        translationY = y
+                    }
             ) {
                 BookSolid(
                     title = book.title,

@@ -24,7 +24,9 @@ data class UpdateEntry(
     val file: String,
     val size: Long,
     /** APK 的 SHA-256（新版电脑端脚本会带上；旧 manifest 没有就为空，跳过校验） */
-    val sha256: String = ""
+    val sha256: String = "",
+    /** 直达下载地址（GitHub Release 的附件链接）；局域网条目为空，走服务器地址拼接 */
+    val directUrl: String = ""
 )
 
 object UpdateClient {
@@ -77,7 +79,7 @@ object UpdateClient {
     ): File = withContext(Dispatchers.IO) {
         val dir = File(ctx.cacheDir, "updates").apply { mkdirs() }
         val out = File(dir, entry.file.ifBlank { "update-${entry.versionName}.apk" })
-        val url = base(serverUrl) + "/" + entry.file
+        val url = entry.directUrl.ifBlank { base(serverUrl) + "/" + entry.file }
         val resp = http.newCall(Request.Builder().url(url).build()).execute()
         if (!resp.isSuccessful) error("下载失败：HTTP ${resp.code}")
         val body = resp.body ?: error("空响应")
@@ -204,5 +206,63 @@ object UpdateClient {
         } catch (e: Exception) {
             null
         }
+    }
+}
+
+/**
+ * GitHub Releases 更新渠道：查 Hahakuaizai/WenForge 的最新 Release，
+ * 带 APK 附件就当成一个可直接下载安装的更新条目（不用打开 GitHub）。
+ * 发版约定（scripts/release-github.ps1 保证）：附件名 wenforge-v<版本>-<versionCode>.apk，
+ * Release 正文就是更新说明，附件 digest 带 SHA-256。
+ */
+object GithubUpdate {
+
+    private const val LATEST_URL =
+        "https://api.github.com/repos/Hahakuaizai/WenForge/releases/latest"
+
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    /** 查最新 Release；没有、没 APK、版本号读不出来都返回 null（当无更新处理） */
+    suspend fun fetchLatest(): UpdateEntry? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url(LATEST_URL)
+            .header("Accept", "application/vnd.github+json")
+            .build()
+        val text = http.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) return@withContext null
+            resp.body?.string() ?: return@withContext null
+        }
+        val root = JSONObject(text)
+        val versionName = root.optString("tag_name").removePrefix("v").removePrefix("V")
+        if (versionName.isBlank()) return@withContext null
+        val assets = root.optJSONArray("assets") ?: return@withContext null
+        var asset: JSONObject? = null
+        for (i in 0 until assets.length()) {
+            val a = assets.getJSONObject(i)
+            if (a.optString("name").endsWith(".apk", ignoreCase = true)) { asset = a; break }
+        }
+        val apkAsset = asset ?: return@withContext null
+        val fileName = apkAsset.optString("name")
+        // versionCode 编在附件名里（wenforge-v0.4.41-47.apk），读不出来就不用这条
+        val code = Regex("""-(\d+)\.apk$""").find(fileName)?.groupValues?.get(1)?.toIntOrNull()
+            ?: return@withContext null
+        val notes = root.optString("body")
+            .lines()
+            .map { it.trim().trimStart('#').trim().removePrefix("- ").removePrefix("* ").trim() }
+            .filter { it.isNotBlank() }
+            .take(12)
+        UpdateEntry(
+            versionName = versionName,
+            versionCode = code,
+            time = root.optString("published_at").take(16).replace('T', ' '),
+            notes = notes,
+            file = fileName,
+            size = apkAsset.optLong("size"),
+            sha256 = apkAsset.optString("digest").removePrefix("sha256:"),
+            directUrl = apkAsset.optString("browser_download_url")
+        )
     }
 }

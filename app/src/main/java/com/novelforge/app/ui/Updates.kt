@@ -39,7 +39,7 @@ fun UpdatesScreen(vm: AppViewModel, onBack: () -> Unit) {
     var server by remember { mutableStateOf(vm.data.settings.updateServerUrl) }
     val (versionName, versionCode) = remember { vm.currentVersion() }
     val history: List<UpdateRecord> = vm.data.settings.updateHistory
-    val latest = vm.updateEntries.firstOrNull()
+    val latest = vm.latestUpdate
     val hasNew = latest != null && latest.versionCode > versionCode
 
     Scaffold(topBar = { BackBar("版本与更新", onBack) }) { pad ->
@@ -155,6 +155,12 @@ fun UpdatesScreen(vm: AppViewModel, onBack: () -> Unit) {
                                         .background(MaterialTheme.colorScheme.primary, CircleShape)
                                 )
                             }
+                            Text(
+                                if (latest.directUrl.isNotBlank()) "来自 GitHub · 应用内直接下载安装"
+                                else "来自你的电脑",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
                             Spacer(Modifier.height(10.dp))
                             NotesBlock(latest.notes)
                             Spacer(Modifier.height(14.dp))

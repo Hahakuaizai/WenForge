@@ -1,6 +1,9 @@
 package com.novelforge.app.ui
 
 import android.widget.Toast
+import androidx.compose.foundation.clickable
+import androidx.compose.runtime.mutableStateOf
+import com.novelforge.app.data.StorageItem
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,6 +56,12 @@ fun StorageScreen(vm: AppViewModel, onBack: () -> Unit) {
     var refresh by remember { mutableIntStateOf(0) }
     val report = remember(refresh, vm.data.importedBooks.size, vm.data.projects.size) {
         StorageStats.report(ctx, vm.data)
+    }
+    var expandedSlice by remember { mutableStateOf<String?>(null) }
+    var expandedItem by remember { mutableStateOf<String?>(null) }
+    // 只算当前展开那部分的明细（点开才算，不拖慢页面）
+    val expandedItems = remember(refresh, expandedSlice, vm.data.importedBooks.size, vm.data.projects.size) {
+        expandedSlice?.let { StorageStats.sliceItems(ctx, vm.data, it) } ?: emptyList()
     }
 
     Scaffold(topBar = { BackBar("存储管理", onBack) }) { pad ->
@@ -129,7 +138,47 @@ fun StorageScreen(vm: AppViewModel, onBack: () -> Unit) {
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(vertical = 6.dp)) {
-                        report.slices.forEach { s -> UsageRow(s, report.totalBytes) }
+                        report.slices.forEach { s ->
+                            val expanded = expandedSlice == s.key
+                            UsageRow(
+                                s, report.totalBytes,
+                                expandable = s.bytes > 0,
+                                expanded = expanded,
+                                onClick = {
+                                    expandedSlice = if (expanded) null else s.key
+                                    expandedItem = null
+                                }
+                            )
+                            if (expanded) {
+                                if (expandedItems.isEmpty()) {
+                                    Text(
+                                        "没有可列出的文件",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.padding(start = 40.dp, top = 2.dp, bottom = 8.dp)
+                                    )
+                                } else {
+                                    expandedItems.forEach { item ->
+                                        val itemKey = item.name + "|" + item.bytes
+                                        val itemOpen = expandedItem == itemKey
+                                        StorageItemRow(
+                                            item, depth = 0,
+                                            expandable = item.children.isNotEmpty(),
+                                            expanded = itemOpen,
+                                            onClick = {
+                                                expandedItem = if (itemOpen) null else itemKey
+                                            }
+                                        )
+                                        if (itemOpen) {
+                                            item.children.forEach { ch ->
+                                                StorageItemRow(ch, depth = 1)
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
+                        }
                     }
                 }
             }
@@ -180,10 +229,17 @@ fun StorageScreen(vm: AppViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun UsageRow(s: UsageSlice, total: Long) {
+private fun UsageRow(
+    s: UsageSlice,
+    total: Long,
+    expandable: Boolean = false,
+    expanded: Boolean = false,
+    onClick: () -> Unit = {}
+) {
     Row(
         Modifier
             .fillMaxWidth()
+            .then(if (expandable) Modifier.clickable { onClick() } else Modifier)
             .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -216,6 +272,66 @@ private fun UsageRow(s: UsageSlice, total: Long) {
                     color = MaterialTheme.colorScheme.outline
                 )
             }
+        }
+        if (expandable) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (expanded) "⌄" else "›",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.outline
+            )
+        }
+    }
+}
+
+/** 明细行：depth 0 = 书/文件，depth 1 = 章 */
+@Composable
+private fun StorageItemRow(
+    item: StorageItem,
+    depth: Int,
+    expandable: Boolean = false,
+    expanded: Boolean = false,
+    onClick: () -> Unit = {}
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(if (expandable) Modifier.clickable { onClick() } else Modifier)
+            .padding(
+                start = (40 + depth * 18).dp, end = 18.dp,
+                top = 5.dp, bottom = 5.dp
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                item.name,
+                style = if (depth == 0) MaterialTheme.typography.bodyMedium
+                else MaterialTheme.typography.bodySmall,
+                maxLines = 2
+            )
+            if (item.detail.isNotBlank()) {
+                Text(
+                    item.detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    maxLines = 2
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            StorageStats.format(item.bytes),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (expandable) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (expanded) "⌄" else "›",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.outline
+            )
         }
     }
 }

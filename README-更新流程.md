@@ -48,3 +48,35 @@ pwsh -File scripts\serve-update.ps1
 ```
 Get-NetTCPConnection -LocalPort 8787 | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 ```
+
+---
+
+## 追加（2026-11-22 晚）：双渠道 + 一键更新
+
+### 渠道二：GitHub Releases（电脑不开着也能更）
+
+发版工具（更新说明直接取 git 提交标题，是真实记录，不编造）：
+
+```powershell
+pwsh -File scripts\release-github.ps1            # 正式发一版
+pwsh -File scripts\release-github.ps1 -Draft     # 先发草稿，检查完再发布
+```
+
+它做的事：取上一个 tag 以来的提交标题当更新说明 → 版本 +1 并提交、打 tag →
+编译 → 附件命名为 `wenforge-v<版本>-<versionCode>.apk` → `gh release create`，
+Release 正文就是更新说明。
+
+手机端查更新时两个渠道都查，谁的 versionCode 新用谁；GitHub 的附件带
+SHA-256（接口 digest），下载后照样校验。弹框里会标明来源（来自 GitHub /
+来自你的电脑）。
+
+### 一键更新
+
+启动静默检查发现新版后，App 会先在后台把 APK 下好；弹框点「立即更新」
+就直接跳系统安装，不再先进「版本与更新」页等下载。没预下完时点更新，
+弹框里直接显示下载进度。
+
+### 入口位置
+
+「我的」只留 模型设置 / 用量统计 / 全局设置；版本与更新、存储管理都进了
+全局设置页顶部（有新版时更新那行带红点）。
