@@ -77,10 +77,10 @@ object UpdateClient {
      * 所以按顺序试几个加速镜像，哪个能下完整就用哪个。
      */
     private val ghMirrors = listOf(
+        // 实测（2026-11）手机端速度：ghfast 约 4.6MB/s，gh-proxy 约 3.9MB/s，
+        // ghproxy.net / mirror.ghproxy.com 已经连不上。快的排前面。
         "https://ghfast.top/",
-        "https://gh-proxy.com/",
-        "https://ghproxy.net/",
-        "https://mirror.ghproxy.com/"
+        "https://gh-proxy.com/"
     )
 
     /** 把 GitHub 原始链接套上镜像前缀 */
@@ -112,7 +112,14 @@ object UpdateClient {
                 }
             }
             if (out.length() < 1024 * 100) return@runCatching false
-            if (expectSize > 0 && out.length() != expectSize) return@runCatching false
+            // 大小校验留容差：GitHub 网页上的「17.7 MB」是四舍五入过的，
+            // 和真实字节数能差几十 KB，严格相等会把好包判成坏包，无限重试。
+            if (expectSize > 0) {
+                val tolerance = (expectSize * 0.02).toLong().coerceAtLeast(64L * 1024)
+                if (kotlin.math.abs(out.length() - expectSize) > tolerance) {
+                    return@runCatching false
+                }
+            }
             if (expectSha.isNotBlank() &&
                 !sha256Of(out).equals(expectSha, ignoreCase = true)
             ) return@runCatching false
@@ -123,6 +130,22 @@ object UpdateClient {
             if (!ok) out.delete()
         }
     }
+
+    /** 快速失败客户端：只用来试「这个地址通不通」，慢就直接换下一个 */
+    private val quickHttp = OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * 先快速探一下这个地址通不通（3 秒连不上就算不通），
+     * 通了再用正式客户端下。避免在国内直连 GitHub 时白白等 30 秒超时。
+     */
+    private fun reachable(url: String): Boolean = runCatching {
+        quickHttp.newCall(Request.Builder().url(url).head().build()).execute().use { r ->
+            r.isSuccessful || r.code in 300..399
+        }
+    }.getOrDefault(false)
 
     suspend fun download(
         serverUrl: String,
@@ -142,15 +165,22 @@ object UpdateClient {
             !isGithub ->
                 listOf(entry.directUrl)
             else ->
-                // GitHub 附件：先直连（有代理/VPN 时最快），再逐个镜像
-                listOf(entry.directUrl) + ghMirrors.map { viaMirror(it, entry.directUrl) }
+                // GitHub 附件：镜像优先，直连放最后。
+                // 原因：国内直连 github.com 会返回 302 然后卡在
+                // objects.githubusercontent.com 上直到超时，白白浪费 30 秒。
+                ghMirrors.map { viaMirror(it, entry.directUrl) } + entry.directUrl
         }
 
-        for ((i, url) in candidates.withIndex()) {
+        // 先挑一个通的（探测很快，3 秒超时），探测全不通就按原顺序硬试
+        val probe = candidates.firstOrNull { reachable(it) }
+        val ordered = if (probe != null) listOf(probe) + candidates.filter { it != probe }
+                      else candidates
+
+        for (url in ordered) {
             val ok = tryFetch(url, out, entry.size, entry.sha256, onProgress)
             if (ok) return@withContext out
         }
-        error("下载失败：直连和 ${ghMirrors.size} 个加速镜像都没成功，检查下网络")
+        error("下载失败：${candidates.size} 个地址都没下成功，检查下网络")
     }
 
     private fun sha256Of(file: File): String {
@@ -257,12 +287,15 @@ object UpdateClient {
  */
 object GithubUpdate {
 
-    private const val LATEST_URL =
-        "https://api.github.com/repos/Hahakuaizai/WenForge/releases/latest"
+    private const val REPO = "Hahakuaizai/WenForge"
+    private const val UA = "Mozilla/5.0 (Linux; Android 14) WenForge"
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(6, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        // 关键：不跟随重定向。要靠 302 的 Location 头读出最新 tag，
+        // 跟着跳过去就只剩一个 200 的 HTML 页面了。
+        .followRedirects(false)
         .build()
 
     /** 查最新 Release；没有、没 APK、版本号读不出来都返回 null（当无更新处理） */
@@ -280,57 +313,93 @@ object GithubUpdate {
         data class Failed(val reason: String) : GhResult()
     }
 
+    /**
+     * 查最新 Release。
+     *
+     * 为什么不走 api.github.com：
+     * 未认证的 GitHub API 每小时只有 60 次配额，用完了直接 403（rate limit），
+     * 表现就是「检查更新失败」，而且一卡就是一小时。实测手机端就撞上过 remaining=0。
+     *
+     * 改用网页（不需要配额，也没有 UA 校验门槛）：
+     *  1) GET /releases/latest  → 302，Location 里带 /releases/tag/v0.4.57
+     *  2) GET /releases/expanded_assets/<tag> → HTML 片段，里面有 APK 文件名
+     * 版本号从 tag 来，versionCode 从附件名（wenforge-v0.4.57-63.apk）里读。
+     * 拿不到 SHA-256 就跳过校验，靠「文件大小 + 能装」兜底。
+     */
     suspend fun fetchLatestDetailed(): GhResult = withContext(Dispatchers.IO) {
-        val text = runCatching {
+        // 1) 找最新 tag
+        val tag = runCatching {
             val req = Request.Builder()
-                .url(LATEST_URL)
-                .header("Accept", "application/vnd.github+json")
+                .url("https://github.com/$REPO/releases/latest")
+                .header("User-Agent", UA)
+                .build()
+            http.newCall(req).execute().use { resp ->
+                if (resp.code in 300..399) {
+                    // Location: https://github.com/xxx/releases/tag/v0.4.57
+                    (resp.header("Location") ?: "").substringAfterLast("/tag/", "")
+                } else if (resp.code == 200) {
+                    // 万一跟随了重定向，就从最终 URL 里抠 tag
+                    resp.request.url.toString().substringAfterLast("/tag/", "")
+                } else if (resp.code == 404) {
+                    return@withContext GhResult.NoRelease
+                } else {
+                    return@withContext GhResult.Failed("HTTP ${resp.code}")
+                }
+            }
+        }.getOrElse { e ->
+            return@withContext GhResult.Failed(e.message ?: e.javaClass.simpleName)
+        }
+        if (tag.isBlank()) return@withContext GhResult.NoRelease
+
+        // 2) 拿附件列表（HTML 片段）
+        val html = runCatching {
+            val req = Request.Builder()
+                .url("https://github.com/$REPO/releases/expanded_assets/$tag")
+                .header("User-Agent", UA)
                 .build()
             http.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     return@withContext GhResult.Failed("HTTP ${resp.code}")
                 }
-                resp.body?.string()
+                resp.body?.string().orEmpty()
             }
         }.getOrElse { e ->
             return@withContext GhResult.Failed(e.message ?: e.javaClass.simpleName)
-        } ?: return@withContext GhResult.Failed("响应为空")
-
-        runCatching {
-            val root = JSONObject(text)
-            val versionName = root.optString("tag_name").removePrefix("v").removePrefix("V")
-            if (versionName.isBlank()) return@withContext GhResult.NoRelease
-            val assets = root.optJSONArray("assets") ?: return@withContext GhResult.NoRelease
-            var asset: JSONObject? = null
-            for (i in 0 until assets.length()) {
-                val a = assets.getJSONObject(i)
-                if (a.optString("name").endsWith(".apk", ignoreCase = true)) { asset = a; break }
-            }
-            val apkAsset = asset ?: return@withContext GhResult.NoRelease
-            val fileName = apkAsset.optString("name")
-            // versionCode 编在附件名里（wenforge-v0.4.41-47.apk），读不出来就不用这条
-            val code = Regex("""-(\d+)\.apk$""").find(fileName)?.groupValues?.get(1)?.toIntOrNull()
-                ?: return@withContext GhResult.NoRelease
-            val notes = root.optString("body")
-                .lines()
-                .map { it.trim().trimStart('#').trim().removePrefix("- ").removePrefix("* ").trim() }
-                .filter { it.isNotBlank() }
-                .take(12)
-            GhResult.Ok(
-                UpdateEntry(
-                    versionName = versionName,
-                    versionCode = code,
-                    time = root.optString("published_at").take(16).replace('T', ' '),
-                    notes = notes,
-                    file = fileName,
-                    size = apkAsset.optLong("size"),
-                    sha256 = apkAsset.optString("digest").removePrefix("sha256:"),
-                    directUrl = apkAsset.optString("browser_download_url")
-                )
-            )
-        }.getOrElse { e ->
-            GhResult.Failed("解析失败：" + (e.message ?: e.javaClass.simpleName))
         }
+        if (html.isBlank()) return@withContext GhResult.Failed("附件列表为空")
+
+        // /releases/download/v0.4.57/wenforge-v0.4.57-63.apk
+        val fileName = Regex("""/releases/download/[^"\s]*/([^"\s]+\.apk)""")
+            .find(html)?.groupValues?.get(1)
+            ?: return@withContext GhResult.NoRelease
+
+        val versionName = tag.removePrefix("v").removePrefix("V")
+        val code = Regex("""-(\d+)\.apk$""").find(fileName)
+            ?.groupValues?.get(1)?.toIntOrNull()
+            ?: return@withContext GhResult.NoRelease
+
+        // 文件大小从 HTML 里的「17.7 MB」读，只用于校验下载完整性
+        val size = Regex("""([\d.]+)\s*(KB|MB|Bytes)""").find(html)?.let { m ->
+            val v = m.groupValues[1].toDoubleOrNull() ?: 0.0
+            when (m.groupValues[2]) {
+                "KB" -> (v * 1024).toLong()
+                "MB" -> (v * 1024 * 1024).toLong()
+                else -> v.toLong()
+            }
+        } ?: 0L
+
+        GhResult.Ok(
+            UpdateEntry(
+                versionName = versionName,
+                versionCode = code,
+                time = "",
+                notes = emptyList(),
+                file = fileName,
+                size = size,
+                sha256 = "",
+                directUrl = "https://github.com/$REPO/releases/download/$tag/$fileName"
+            )
+        )
     }
 
     /** 老接口：只关心「有没有可用的新版本」时用 */
