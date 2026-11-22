@@ -13,8 +13,8 @@ android {
         applicationId = "com.novelforge.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 49
-        versionName = "0.4.43"
+        versionCode = 50
+        versionName = "0.4.44"
     }
 
     buildTypes {
