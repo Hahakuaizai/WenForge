@@ -1142,20 +1142,22 @@ private fun BookCarousel(
         // 最终：用原生 android.graphics.RadialGradient + Matrix 做椭圆缩放，
         // 渐变真的从中心往外淡出。每帧只画 1 个椭圆，开销可忽略。
         val shadowCx = startX + cover * 0.33f + spine * 0.5f
-        val shadowCy = baseY + H + cover * 0.04f
-        val shadowRx = (spine + cover * 0.66f) * 0.60f
-        val shadowRy = cover * 0.10f
+        val shadowCy = baseY + H + cover * 0.045f
+        val shadowRx = (spine + cover * 0.66f) * 0.80f
+        val shadowRy = cover * 0.14f
         // 原生 paint 只建一次，Matrix 每次改
+        // 注意：渐变里的 alpha 和 paint.alpha 会相乘。这里渐变给足（中心 0.22），
+        // paint.alpha 只用来做「拖远淡出」，不参与基础浓度。
         val shadowPaint = remember {
             android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 shader = android.graphics.RadialGradient(
                     0f, 0f, 1f,
                     intArrayOf(
-                        android.graphics.Color.argb(38, 0x2B, 0x28, 0x22),
-                        android.graphics.Color.argb(18, 0x2B, 0x28, 0x22),
+                        android.graphics.Color.argb(96, 0x2B, 0x28, 0x22),
+                        android.graphics.Color.argb(42, 0x2B, 0x28, 0x22),
                         android.graphics.Color.argb(0, 0x2B, 0x28, 0x22)
                     ),
-                    floatArrayOf(0f, 0.5f, 1f),
+                    floatArrayOf(0f, 0.45f, 1f),
                     android.graphics.Shader.TileMode.CLAMP
                 )
             }
@@ -1203,6 +1205,11 @@ private fun BookCarousel(
                         val (x, y) = bookOrigin(i, pos, enter.value)
                         translationX = x
                         translationY = y
+                        // 关键：把这本书提升成独立的硬件图层（离屏纹理）。
+                        // 内容画一次就缓存进纹理，滑动时只改 translationX/Y 移动纹理，
+                        // 不再每帧重跑封面那套绘制。这就是 Flutter 版 RepaintBoundary
+                        // 在 Compose 里的等价物。
+                        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
                     }
             ) {
                 // key() 隔离：书的内容跟 pos 无关，滑动时 Compose 会跳过这棵子树的重组

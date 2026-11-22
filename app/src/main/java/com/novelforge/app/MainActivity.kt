@@ -52,6 +52,10 @@ import com.novelforge.app.ui.WorkbenchScreen
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 显式开启 edge-to-edge：Android 15+ 起系统强制这个模式，
+        // 不主动声明的话 WindowInsets.ime 在某些机型上拿不到键盘高度，
+        // 底部导航就会被顶上来（而不是像预期那样自己藏起来）。
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
                 NovelForgeTheme {
                     Surface(color = MaterialTheme.colorScheme.background) {
