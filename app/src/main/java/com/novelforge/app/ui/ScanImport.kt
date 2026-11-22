@@ -131,6 +131,25 @@ fun ScanImportScreen(
         if (files.isEmpty() && BookScanner.errs.isNotEmpty()) {
             message = "扫描出错：" + BookScanner.errs.take(2).joinToString("；")
         }
+        // 标出哪些书已经在书架上了（按文件名+格式，跟导入时的重复判定同一套）
+        files = withContext(Dispatchers.IO) {
+            val shelf = vm.data.importedBooks
+            files.map { f ->
+                val hit = runCatching {
+                    val bytes = BookScanner.readBytes(ctx, f)
+                    val parsed = BookParser.parse(bytes, f.name)
+                    val fp = com.novelforge.app.data.DuplicateFinder.fingerprintOf(parsed.chapters)
+                    com.novelforge.app.data.DuplicateFinder.find(
+                        books = shelf,
+                        incomingTitle = f.name.substringBeforeLast('.'),
+                        incomingSourceName = f.name,
+                        incomingFingerprint = fp,
+                        incomingChapterCount = parsed.chapters.size
+                    ) != null
+                }.getOrDefault(false)
+                f.copy(inLibrary = hit)
+            }
+        }
         scanning = false
     }
 
@@ -171,7 +190,11 @@ fun ScanImportScreen(
                                 val shown = if (extFilter == "all") files
                                 else files.filter { it.ext == extFilter }
                                 val novel = shown.count { it.looksLikeNovel }
-                                "找到 ${shown.size} 个文件 · $novel 个像小说"
+                                val already = shown.count { it.inLibrary }
+                                buildString {
+                                    append("找到 ${shown.size} 个文件 · $novel 个像小说")
+                                    if (already > 0) append(" · $already 个已入库")
+                                }
                             }
                         },
                         style = MaterialTheme.typography.labelSmall,
@@ -198,7 +221,7 @@ fun ScanImportScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (picked.isNotEmpty() && picked.size == (if (extFilter == "all") files else files.filter { it.ext == extFilter }).count { it.looksLikeNovel }) "取消全选" else "全选小说",
+                        if (picked.isNotEmpty() && picked.size == (if (extFilter == "all") files else files.filter { it.ext == extFilter }).count { it.looksLikeNovel && !it.inLibrary }) "取消全选" else "全选小说",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
@@ -206,7 +229,8 @@ fun ScanImportScreen(
                             .clickable {
                                 val base = if (extFilter == "all") files
                                 else files.filter { it.ext == extFilter }
-                                val novels = base.filter { it.looksLikeNovel }
+                                // 已入库的不参与全选
+                                val novels = base.filter { it.looksLikeNovel && !it.inLibrary }
                                 if (picked.size == novels.size && novels.isNotEmpty()) picked.clear()
                                 else {
                                     picked.clear()
@@ -366,55 +390,14 @@ fun ScanImportScreen(
                     }
                     // 小说直接列出来
                     items(novelsInGroup, key = { it.key }) { f ->
-                    val on = f.key in picked
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                            .clickable {
-                                if (on) picked.remove(f.key) else picked.add(f.key)
-                            }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            Modifier
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (on) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.surfaceVariant
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (on) {
-                                Text(
-                                    "✓",
-                                    style = TextStyle(fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary)
-                                )
-                            }
+                    FileRow(
+                        f = f,
+                        on = f.key in picked,
+                        onToggle = {
+                            if (f.inLibrary) return@FileRow
+                            if (f.key in picked) picked.remove(f.key) else picked.add(f.key)
                         }
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                f.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "${f.ext.uppercase()} · ${f.sizeLabel} · ${f.hint}" +
-                                    if (f.looksLikeNovel) "" else "（仍可导入）",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
+                    )
                     }
 
                     // 同格式里不是小说的部分，默认折叠
@@ -446,55 +429,15 @@ fun ScanImportScreen(
                         }
                         if (restOpen) {
                             items(restInGroup, key = { it.key }) { f ->
-                                val on = f.key in picked
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
-                                        .clickable {
-                                            if (on) picked.remove(f.key) else picked.add(f.key)
-                                        }
-                                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        Modifier
-                                            .size(18.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                if (on) MaterialTheme.colorScheme.primary
-                                                else MaterialTheme.colorScheme.surfaceVariant
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (on) {
-                                            Text(
-                                                "✓",
-                                                style = TextStyle(
-                                                    fontSize = 10.sp,
-                                                    color = MaterialTheme.colorScheme.onPrimary
-                                                )
-                                            )
-                                        }
+                                FileRow(
+                                    f = f,
+                                    on = f.key in picked,
+                                    compact = true,
+                                    onToggle = {
+                                        if (f.inLibrary) return@FileRow
+                                        if (f.key in picked) picked.remove(f.key) else picked.add(f.key)
                                     }
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            f.name,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            "${f.sizeLabel} · ${f.hint}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.outline,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
+                                )
                             }
                         }
                     }
@@ -661,6 +604,124 @@ fun ScanImportScreen(
                 }
             }
         )
+    }
+}
+
+/**
+ * 扫描结果里的一行文件。
+ * 已经入库的：整行压暗、勾选框换成「已入库」标记、点不动。
+ */
+@Composable
+private fun FileRow(
+    f: FoundBook,
+    on: Boolean,
+    compact: Boolean = false,
+    onToggle: () -> Unit
+) {
+    val dim = f.inLibrary
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(if (compact) 14.dp else 16.dp))
+            .background(
+                when {
+                    dim -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                    compact -> MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                    else -> MaterialTheme.colorScheme.surface
+                }
+            )
+            .clickable(enabled = !dim, onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = if (compact) 10.dp else 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 左侧标记：已入库 → 实心勾 + 「已入库」；否则正常勾选框
+        if (dim) {
+            Box(
+                Modifier
+                    .size(if (compact) 18.dp else 20.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "✓",
+                    style = TextStyle(
+                        fontSize = if (compact) 10.sp else 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                )
+            }
+        } else {
+            Box(
+                Modifier
+                    .size(if (compact) 18.dp else 20.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (on) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (on) {
+                    Text(
+                        "✓",
+                        style = TextStyle(
+                            fontSize = if (compact) 10.sp else 11.sp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    f.name,
+                    style = if (compact) MaterialTheme.typography.bodySmall
+                    else MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (compact) FontWeight.Normal else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (dim) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (dim) {
+                    Spacer(Modifier.width(6.dp))
+                    // 已入库标签：小胶囊，和文件名同一行，一眼能扫出来
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            "已入库",
+                            style = TextStyle(
+                                fontSize = 9.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.Medium
+                            )
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                buildString {
+                    if (!compact) append("${f.ext.uppercase()} · ")
+                    append(f.sizeLabel)
+                    append(" · ")
+                    append(if (dim) "书架上已有" else f.hint)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (dim) MaterialTheme.colorScheme.outline
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 

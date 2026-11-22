@@ -19,7 +19,9 @@ data class FoundBook(
     /** 看起来像小说（有章节结构 / 大段中文正文） */
     val looksLikeNovel: Boolean = true,
     /** 判断依据，给用户看 */
-    val hint: String = ""
+    val hint: String = "",
+    /** 书架上已经有这本书了（内容指纹对得上） */
+    val inLibrary: Boolean = false
 ) {
     /** 列表用的唯一键：优先路径，没有路径就用 uri，都没有就退回文件名+大小 */
     val key: String
