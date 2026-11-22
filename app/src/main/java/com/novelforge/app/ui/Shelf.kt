@@ -1272,7 +1272,8 @@ private fun BookCarousel(
             .sortedBy { relOfStatic(it, slotPos, n) }
         val bookBoxW = with(density) { (spine + cover * 0.66f).toDp() }
         // 盒子要装得下「顶面斜出的角 + 整本书 + 底部留白」，太紧会被 Offscreen 图层裁掉
-        val bookBoxH = with(density) { (H + cover * 0.60f + 20f).toDp() }
+        val topPadPx = cover * 0.30f + 10f
+        val bookBoxH = with(density) { (H + cover * 0.60f + 20f + topPadPx).toDp() }
         order.forEach { i ->
             val book = books[i]
 
@@ -1296,12 +1297,11 @@ private fun BookCarousel(
                         val pull = cover * 0.84f * w * (1.24f - 0.24f * w)
                         val lift = w * w * (3f - 2f * w)
                         translationX = startX + d * pitch - pull * 0.66f + slide * 0.66f
-                        translationY = baseY + railY(d) + 0.30f * pull - 0.60f * H * lift + slide * -0.30f
-                        // 不要用 Offscreen：它会按 Box 尺寸建纹理，而书的内容
-                        // （顶面斜出的角、封面左上的投影）会超出 Box 边界，
-                        // 超出的部分直接被裁成一条直线，立体感全没了。
-                        // graphicsLayer 本身已经会把这块合成到一个图层，
-                        // 位置变化只改 translation，不会重跑内容绘制。
+                        translationY = baseY + railY(d) + 0.30f * pull - 0.60f * H * lift + slide * -0.30f - topPadPx
+                        // 内容已在 BookSolid 里整体下移 topPad，这里上移补偿，视觉位置不变。
+                        // 强制离屏缓存：滑动每帧只更新这块缓存的变换矩阵，不重跑内容绘制
+                        // （对齐 Flutter 的 TransformLayer + oldLayer 复用）。
+                        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
                     }
             ) {
                 // key() 隔离：书的内容跟 pos 无关，滑动时 Compose 会跳过这棵子树的重组
@@ -1596,7 +1596,7 @@ private fun BookSolid(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().padding(top = with(density) { (coverPx * 0.30f + 10f).toDp() })) {
         Canvas(Modifier.fillMaxSize()) {
             val canvas = drawContext.canvas.nativeCanvas
             val fill = paints.fill
