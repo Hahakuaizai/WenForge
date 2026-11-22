@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +46,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -141,31 +143,84 @@ fun ReaderScreen(
     var showToc by remember { mutableStateOf(false) }
     var chapter by remember {
         mutableIntStateOf(
-            if (startChapter > 0 && book != null) {
-                book.chapters.indexOfFirst { it.no == startChapter }.coerceAtLeast(0)
-            } else 0
+            when {
+                // 指定了章节（从搜索结果点进来）就用它
+                startChapter > 0 && book != null ->
+                    book.chapters.indexOfFirst { it.no == startChapter }.coerceAtLeast(0)
+                // 否则接着上次读到的地方
+                else -> vm.readProgressOf(kind, bookId)
+            }
         )
     }
+    // 顶栏 / 底栏是否显示：点正文切换
+    var chromeVisible by remember { mutableStateOf(true) }
+    // 护眼模式
+    var eyeCare by remember { mutableStateOf(settings.readerEyeCare) }
+    var eyeCareStrength by remember { mutableFloatStateOf(settings.readerEyeCareStrength) }
     val scope = rememberCoroutineScope()
     val readerCtx = androidx.compose.ui.platform.LocalContext.current
     var showSearch by remember { mutableStateOf(false) }
     // 跳转请求（章序号 to 第几次）：目录和搜索共用，三种翻页模式都认
     var jumpRequest by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    // 正在跳转：这段时间别让滚动监听把 chapter 改回旧值
+    var jumping by remember { mutableStateOf(false) }
     val scrollListState = rememberLazyListState()
 
     // 滚动模式的跳转（另外两种模式在各自的 pager 旁边处理）
     androidx.compose.runtime.LaunchedEffect(jumpRequest) {
         val jr = jumpRequest ?: return@LaunchedEffect
         if (pageMode == "scroll") {
+            jumping = true
             runCatching { scrollListState.animateScrollToItem(jr.first) }
+            chapter = jr.first
+            kotlinx.coroutines.delay(260)
+            jumping = false
         }
     }
 
     val theme = readerThemes.firstOrNull { it.key == themeKey } ?: readerThemes[1]
 
-    fun persist() = vm.saveReaderPrefs(fontSize, lineHeight, themeKey, pageMode)
+    fun persist() = vm.saveReaderPrefs(
+        fontSize, lineHeight, themeKey, pageMode, eyeCare, eyeCareStrength
+    )
 
-    Box(Modifier.fillMaxSize().background(theme.bg)) {
+    // 章节变了就记进度。加 700ms 防抖：翻书时别每翻一章就重写一次
+    // 10MB 的 data.json（之前卡顿有一部分就是它）。
+    androidx.compose.runtime.LaunchedEffect(chapter) {
+        if (book == null) return@LaunchedEffect
+        kotlinx.coroutines.delay(700)
+        vm.saveReadProgress(kind, bookId, chapter)
+    }
+    // 离开阅读页立刻落盘，别等防抖
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            if (book != null) vm.saveReadProgress(kind, bookId, chapter)
+        }
+    }
+
+    val tapSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(theme.bg)
+            // 护眼模式：整层叠一道暖色，压蓝光
+            .drawWithContent {
+                drawContent()
+                if (eyeCare && eyeCareStrength > 0f) {
+                    // 直接叠暖色（不用 Multiply：浅色背景上 Multiply 几乎看不出变化）
+                    drawRect(
+                        color = androidx.compose.ui.graphics.Color(0xFFFFC078)
+                            .copy(alpha = (eyeCareStrength * 1.15f).coerceIn(0f, 0.5f))
+                    )
+                }
+            }
+            // 点正文任意位置：隐藏 / 呼出顶底栏
+            .clickable(interactionSource = tapSrc, indication = null) {
+                chromeVisible = !chromeVisible
+                Haptics.tick(readerCtx)
+            }
+    ) {
         if (book == null || book.chapters.isEmpty()) {
             Column(
                 Modifier.fillMaxSize(),
@@ -197,6 +252,7 @@ fun ReaderScreen(
                         Haptics.select(appCtx)
                     }
                     lastPage = pager.currentPage
+                    chapter = pager.currentPage
                 }
                 HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
                     ChapterPage(
@@ -222,7 +278,13 @@ fun ReaderScreen(
                     val linesPerPage = max(6, ((heightPx - padV * 2) / lineH).toInt())
                     val perPage = (charsPerLine * linesPerPage).coerceAtLeast(200)
                     val pages = remember(book, perPage) { paginate(book.chapters, perPage) }
-                    val pager = rememberPagerState(pageCount = { pages.size })
+                    val pager = rememberPagerState(
+                        initialPage = remember(pages) {
+                            pages.indexOfFirst { it.chapterIndex == chapter }
+                                .coerceAtLeast(0)
+                        },
+                        pageCount = { pages.size }
+                    )
                     androidx.compose.runtime.LaunchedEffect(jumpRequest) {
                         val jr = jumpRequest ?: return@LaunchedEffect
                         var ordinal = -1
@@ -242,6 +304,7 @@ fun ReaderScreen(
                             Haptics.select(appCtx)
                         }
                         lastPage = pager.currentPage
+                        pages.getOrNull(pager.currentPage)?.let { chapter = it.chapterIndex }
                     }
                     HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { i ->
                         val page = pages[i]
@@ -280,6 +343,17 @@ fun ReaderScreen(
             }
             else -> {
                 val listState = scrollListState
+                // 启动时定位到上次读到的章
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    if (chapter > 0) {
+                        runCatching { listState.scrollToItem(chapter) }
+                    }
+                }
+                // 滚到哪章就记哪章
+                androidx.compose.runtime.LaunchedEffect(listState) {
+                    snapshotFlow { listState.firstVisibleItemIndex }
+                        .collect { idx -> if (!jumping) chapter = idx }
+                }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -316,14 +390,43 @@ fun ReaderScreen(
             }
         }
 
-        // 顶部栏
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
+        // 顶部栏（点正文可隐藏）
+        AnimatedVisibility(
+            visible = chromeVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter)
         ) {
+            Box(Modifier.fillMaxWidth()) {
+                // 渐变底：文字不跟正文糊在一起
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(100.dp)
+                        .background(
+                            androidx.compose.ui.graphics.Brush.verticalGradient(
+                                listOf(
+                                    theme.bg.copy(alpha = 0.98f),
+                                    theme.bg.copy(alpha = 0.90f),
+                                    theme.bg.copy(alpha = 0f)
+                                )
+                            )
+                        )
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        // 吞掉点击：不然点顶栏会穿到底层「切换顶栏」的手势里
+                        .clickable(
+                            interactionSource = remember {
+                                androidx.compose.foundation.interaction.MutableInteractionSource()
+                            },
+                            indication = null
+                        ) { }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
             val bsrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             Box(
                 Modifier
@@ -418,6 +521,8 @@ fun ReaderScreen(
                     tint = theme.fg
                 )
             }
+                }
+            }
         }
 
         // 目录
@@ -476,6 +581,10 @@ fun ReaderScreen(
                 onLineHeight = { lineHeight = it; persist() },
                 onTheme = { themeKey = it; persist() },
                 onPageMode = { pageMode = it; persist() },
+                eyeCare = eyeCare,
+                eyeCareStrength = eyeCareStrength,
+                onEyeCare = { eyeCare = it; persist() },
+                onEyeCareStrength = { eyeCareStrength = it; persist() },
                 onClose = { showSettings = false }
             )
         }
@@ -530,17 +639,21 @@ private fun ChapterPage(
     }
 }
 
-private data class PageSlice(val chapterTitle: String?, val text: String)
+private data class PageSlice(
+    val chapterTitle: String?,
+    val text: String,
+    val chapterIndex: Int = 0
+)
 
 /** 把整本切成固定字数的页，尽量在句号处断开 */
 private fun paginate(chapters: List<ReaderChapter>, perPage: Int): List<PageSlice> {
     val pages = mutableListOf<PageSlice>()
-    chapters.forEach { ch ->
+    chapters.forEachIndexed { chIdx, ch ->
         val body = ch.content.trim()
             .lineSequence()
             .filter { it.isNotBlank() }
             .joinToString(separator = "\n") { "　　" + it.trim() }
-        if (body.isEmpty()) return@forEach
+        if (body.isEmpty()) return@forEachIndexed
         var start = 0
         var first = true
         while (start < body.length) {
@@ -553,7 +666,13 @@ private fun paginate(chapters: List<ReaderChapter>, perPage: Int): List<PageSlic
                     .maxOrNull() ?: -1
                 if (cut > perPage / 2) end = start + cut + 1
             }
-            pages.add(PageSlice(if (first) ch.title else null, body.substring(start, end).trim()))
+            pages.add(
+                PageSlice(
+                    if (first) ch.title else null,
+                    body.substring(start, end).trim(),
+                    chIdx
+                )
+            )
             first = false
             start = end
         }
@@ -572,6 +691,10 @@ private fun SettingsPanel(
     onLineHeight: (Float) -> Unit,
     onTheme: (String) -> Unit,
     onPageMode: (String) -> Unit,
+    eyeCare: Boolean,
+    eyeCareStrength: Float,
+    onEyeCare: (Boolean) -> Unit,
+    onEyeCareStrength: (Float) -> Unit,
     onClose: () -> Unit
 ) {
     val panelBg = if (theme.dark) Color(0xFF1B1E22) else Color.White
@@ -674,6 +797,40 @@ private fun SettingsPanel(
                         )
                     }
                 }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // 护眼
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("护眼", style = MaterialTheme.typography.labelMedium, color = muted)
+            Spacer(Modifier.width(10.dp))
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        if (eyeCare) (if (theme.dark) Color(0xFF3E3320) else Color(0xFFFFF0D8))
+                        else Color.Transparent
+                    )
+                    .clickable { onEyeCare(!eyeCare) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    if (eyeCare) "已开" else "关",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (eyeCare) (if (theme.dark) Color(0xFFE0B87A) else Color(0xFF8A5A1E)) else muted,
+                    fontWeight = if (eyeCare) FontWeight.SemiBold else FontWeight.Normal
+                )
+            }
+            if (eyeCare) {
+                Spacer(Modifier.weight(1f))
+                Slider(
+                    value = eyeCareStrength,
+                    onValueChange = onEyeCareStrength,
+                    valueRange = 0.05f..0.45f,
+                    modifier = Modifier.width(120.dp)
+                )
             }
         }
     }

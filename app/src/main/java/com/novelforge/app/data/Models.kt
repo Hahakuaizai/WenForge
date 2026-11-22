@@ -146,6 +146,15 @@ data class AppSettings(
     var readerTheme: String = "paper",
     /** 翻页方式：scroll 滚动 / chapter 章节横滑 / page 分页横滑 */
     var readerPageMode: String = "scroll",
+    /** 护眼模式：叠加一层暖色滤镜，压蓝光 */
+    var readerEyeCare: Boolean = false,
+    /** 护眼强度 0..1（默认 0.18，很淡的暖黄） */
+    var readerEyeCareStrength: Float = 0.18f,
+    /**
+     * 每本书读到哪了。key = "kind:bookId"，value = 章序号。
+     * 章序号是「阅读器里的序号」（0 基），不是书里的章节号。
+     */
+    var readProgress: MutableMap<String, Int> = mutableMapOf(),
     // —— 更新 ——
     /** 更新服务地址；默认走 adb reverse 的本机端口，接 WiFi 时可改成电脑局域网地址 */
     var updateServerUrl: String = "http://127.0.0.1:8787",

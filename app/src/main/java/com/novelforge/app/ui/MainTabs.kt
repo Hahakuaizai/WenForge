@@ -1,5 +1,6 @@
 package com.novelforge.app.ui
 
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -90,8 +91,30 @@ fun MainTabsScreen(
 
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().padding(bottom = bottomPad)) {
-            stateHolder.SaveableStateProvider(tab) {
-            when (tab) {
+            // tab 切换：淡入 + 轻微横向滑动，方向跟着左右走
+            var prevTab by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(tab) }
+            val forward = tab >= prevTab
+            androidx.compose.runtime.LaunchedEffect(tab) { prevTab = tab }
+            androidx.compose.animation.AnimatedContent(
+                targetState = tab,
+                transitionSpec = {
+                    val dir = if (forward) 1 else -1
+                    (androidx.compose.animation.fadeIn(
+                        androidx.compose.animation.core.tween(240)
+                    ) + androidx.compose.animation.slideInHorizontally(
+                        androidx.compose.animation.core.tween(300)
+                    ) { w -> dir * w / 10 }) togetherWith
+                        (androidx.compose.animation.fadeOut(
+                            androidx.compose.animation.core.tween(160)
+                        ) + androidx.compose.animation.slideOutHorizontally(
+                            androidx.compose.animation.core.tween(240)
+                        ) { w -> -dir * w / 16 })
+                },
+                label = "tabSwitch",
+                modifier = Modifier.fillMaxSize()
+            ) { currentTab ->
+            stateHolder.SaveableStateProvider(currentTab) {
+            when (currentTab) {
                 0 -> ShelfScreen(
                     vm = vm,
                     onOpen = { kind, id, chapter -> onOpenReader(kind, id, chapter) },
@@ -118,6 +141,7 @@ fun MainTabsScreen(
                     onOpenUpdates = onOpenUpdates,
                     onOpenStorage = onOpenStorage
                 )
+            }
             }
             }
         }

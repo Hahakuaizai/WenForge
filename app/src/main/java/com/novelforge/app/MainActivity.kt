@@ -56,6 +56,16 @@ class MainActivity : ComponentActivity() {
         // 不主动声明的话 WindowInsets.ime 在某些机型上拿不到键盘高度，
         // 底部导航就会被顶上来（而不是像预期那样自己藏起来）。
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        // 全面屏：系统栏透明，让页面背景一直铺到屏幕边缘，不留白边
+        @Suppress("DEPRECATION")
+        run {
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                window.isNavigationBarContrastEnforced = false
+                window.isStatusBarContrastEnforced = false
+            }
+        }
         setContent {
                 NovelForgeTheme {
                     Surface(color = MaterialTheme.colorScheme.background) {

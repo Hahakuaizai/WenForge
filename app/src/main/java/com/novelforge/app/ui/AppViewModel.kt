@@ -768,14 +768,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         Haptics.configure(enabled, strength)
     }
 
-    fun saveReaderPrefs(fontSize: Float, lineHeight: Float, theme: String, pageMode: String) {
+    fun saveReaderPrefs(
+        fontSize: Float,
+        lineHeight: Float,
+        theme: String,
+        pageMode: String,
+        eyeCare: Boolean = store.data.settings.readerEyeCare,
+        eyeCareStrength: Float = store.data.settings.readerEyeCareStrength
+    ) {
         val st = store.data.settings
         st.readerFontSize = fontSize
         st.readerLineHeight = lineHeight
         st.readerTheme = theme
         st.readerPageMode = pageMode
+        st.readerEyeCare = eyeCare
+        st.readerEyeCareStrength = eyeCareStrength
         store.save()
         data = store.data
+    }
+
+    // —— 阅读进度 ——
+
+    private fun progressKey(kind: String, bookId: String) = "$kind:$bookId"
+
+    /** 上次读到第几章（阅读器内部 0 基序号）；没记录返回 0 */
+    fun readProgressOf(kind: String, bookId: String): Int =
+        store.data.settings.readProgress[progressKey(kind, bookId)] ?: 0
+
+    /** 记下读到哪了。只在章变化时写，避免频繁落盘 */
+    fun saveReadProgress(kind: String, bookId: String, chapterIndex: Int) {
+        val key = progressKey(kind, bookId)
+        if (store.data.settings.readProgress[key] == chapterIndex) return
+        store.data.settings.readProgress[key] = chapterIndex
+        store.save()
     }
 
     /** 书架编辑：改名 / 改作者，作品和导入的书都支持 */

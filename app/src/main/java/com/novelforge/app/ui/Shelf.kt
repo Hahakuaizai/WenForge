@@ -136,7 +136,7 @@ private val InkBlack = Color(0xFF15161A)
 private val InkGray = Color(0xFF8E9298)
 private val HairLine = Color(0xFFE8E8E6)
 private val GridLine = Color(0xFFF1F1EF)
-private val PaperWhite = Color(0xFFFCFCFB)
+private val PaperWhite = Color(0xFFFAFAF8)
 
 @Composable
 fun ShelfScreen(
@@ -193,7 +193,20 @@ fun ShelfScreen(
     // 搜索界面按返回键 / 侧滑：回书架首页，不退出应用
     androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false }
 
-    if (searchOpen) {
+    androidx.compose.animation.AnimatedVisibility(
+        visible = searchOpen,
+        enter = androidx.compose.animation.fadeIn(
+            androidx.compose.animation.core.tween(220)
+        ) + androidx.compose.animation.slideInVertically(
+            androidx.compose.animation.core.tween(300)
+        ) { it / 8 },
+        exit = androidx.compose.animation.fadeOut(
+            androidx.compose.animation.core.tween(160)
+        ) + androidx.compose.animation.slideOutVertically(
+            androidx.compose.animation.core.tween(220)
+        ) { it / 12 },
+        modifier = Modifier.fillMaxSize()
+    ) {
         ShelfSearch(
             vm = vm,
             onClose = { searchOpen = false },
@@ -202,8 +215,9 @@ fun ShelfScreen(
                 onOpen(kind, id, chapter)
             }
         )
-        return
     }
+    // 搜索界面盖满时，底下的书架不接手势
+    if (searchOpen) return
 
     Box(Modifier.fillMaxSize().background(PaperWhite)) {
         // 背景网格
@@ -955,12 +969,17 @@ private fun BookCarousel(
         animJob = scope.launch { block() }
     }
 
-    /** 点侧书 / 步进按钮：380ms 贝塞尔（带一点过冲，跟原作一致） */
+    /**
+     * 点侧书 / 步进按钮：短距离 380ms 贝塞尔（带一点过冲，跟原作一致）；
+     * 隔着好几本的远距离，按距离拉长时长（最多 900ms），飞过去不晕。
+     */
     suspend fun animatePosTo(dest: Float) {
+        val dist = kotlin.math.abs(dest - pos)
+        val ms = (380f + kotlin.math.min(dist, 12f) * 44f).toInt().coerceAtMost(900)
         val a = Animatable(pos)
         a.animateTo(
             dest,
-            tween(380, easing = CubicBezierEasing(0.2f, 1.06f, 0.35f, 1f))
+            tween(ms, easing = CubicBezierEasing(0.2f, 1.06f, 0.35f, 1f))
         ) { pos = value }
     }
 
@@ -1068,7 +1087,42 @@ private fun BookCarousel(
                     bestAd = ad
                 }
             }
-            return best
+            if (best != null) return best
+
+            // 精确多边形没中（书之间有空隙、侧面书太薄）：退一步，
+            // 找「点击点到书实体包围盒」最近的那本，容差 26dp。
+            // 这样两本书之间隔好几本也能一下点中远处那本。
+            val tol = 26f * density.density
+            var nearBest: Int? = null
+            var nearDist = Float.MAX_VALUE
+            for (i in books.indices) {
+                val ad = kotlin.math.abs(relOfStatic(i, p, n))
+                if (ad > rangeF) continue
+                val (bx, by) = bookOrigin(i, p, 1.45f)
+                // 实体包围盒：x 从 0 到 spine+dx，y 从 dy 到 skew+dy+H
+                val lx = px - bx
+                val ly = py - by
+                val x0 = 0f
+                val x1 = spine + dx
+                val y0 = dy
+                val y1 = skew + dy + H
+                val ddx = when {
+                    lx < x0 -> x0 - lx
+                    lx > x1 -> lx - x1
+                    else -> 0f
+                }
+                val ddy = when {
+                    ly < y0 -> y0 - ly
+                    ly > y1 -> ly - y1
+                    else -> 0f
+                }
+                val dist = kotlin.math.sqrt(ddx * ddx + ddy * ddy) + ad * 0.6f
+                if (dist < nearDist && dist <= tol) {
+                    nearBest = i
+                    nearDist = dist
+                }
+            }
+            return nearBest
         }
 
         // 手势统一在这一层处理：跟手拖动 / 惯性 / 点击命中 / 长按命中
