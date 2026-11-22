@@ -12,8 +12,20 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
       - name: Build debug APK
         run: |
+          export ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          CMD=$(ls -d "$ANDROID_HOME"/cmdline-tools/* 2>/dev/null | tail -1)
+          if [ -n "$CMD" ]; then
+            yes | "$CMD/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$CMD/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools" >/dev/null 2>&1 || true
+          fi
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WenForge-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
