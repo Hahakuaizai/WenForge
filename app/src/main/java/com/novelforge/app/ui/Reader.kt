@@ -215,9 +215,16 @@ fun ReaderScreen(
                     )
                 }
             }
-            // 点正文任意位置：隐藏 / 呼出顶底栏
+            // 点正文任意位置：先收面板；没面板时切换顶底栏
             .clickable(interactionSource = tapSrc, indication = null) {
-                chromeVisible = !chromeVisible
+                if (showSettings || showToc || showSearch) {
+                    // 面板开着：点一下全收起，顶栏保持可见
+                    showSettings = false
+                    showToc = false
+                    showSearch = false
+                } else {
+                    chromeVisible = !chromeVisible
+                }
                 Haptics.tick(readerCtx)
             }
     ) {
@@ -707,6 +714,13 @@ private fun SettingsPanel(
             .padding(horizontal = 12.dp, vertical = 12.dp)
             .clip(RoundedCornerShape(26.dp))
             .background(panelBg)
+            // 面板内部点击不要穿到「收起面板」的手势上
+            .clickable(
+                interactionSource = remember {
+                    androidx.compose.foundation.interaction.MutableInteractionSource()
+                },
+                indication = null
+            ) { }
             .padding(18.dp)
     ) {
         // 字号
