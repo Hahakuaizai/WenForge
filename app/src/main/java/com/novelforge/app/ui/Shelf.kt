@@ -222,14 +222,18 @@ fun ShelfScreen(
         }
 
         LazyColumn(
-            Modifier.fillMaxSize(),
+            // statusBarsPadding 必须放在 LazyColumn 外层：
+            // 放在 item 里的话，滚动时这块 padding 会跟着 item 一起滚走，
+            // 标题就顶到状态栏下面了（实测被截断）。
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding(),
             contentPadding = PaddingValues(bottom = 100.dp)
         ) {
             // 大标题
             item {
                 Column(
                     Modifier
-                        .statusBarsPadding()
                         .padding(start = 24.dp, end = 24.dp, top = 18.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -979,11 +983,15 @@ private fun BookCarousel(
         }
     }
 
+    // 固定高度：书是绝对定位（graphicsLayer 平移）的，不参与布局测量，
+    // 不显式给高度的话容器会塌到 0 或者被裁。
+    val fixedH = 440.dp
     BoxWithConstraints(
-        Modifier.fillMaxWidth()
+        Modifier.fillMaxWidth().height(fixedH)
     ) {
         // 横屏时压低展示面，不然整本书塞不下
-        val boxH = if (maxWidth > maxHeight) 330.dp else 400.dp
+        // 书抽出来时顶部会往上抬（lift 最高 0.60*H），容器要留够
+        val boxH = if (maxWidth > maxHeight) 360.dp else fixedH
         val Wdp = maxWidth.value
         val landscape = maxWidth > maxHeight
         val spineDp = (Wdp * 0.043f).coerceIn(14f, 18f)
@@ -995,7 +1003,9 @@ private fun BookCarousel(
         val footprintDp = spineDp + coverDp * 0.66f
         // 可见槽位范围按宽度算：竖屏约 ±6，横屏全宽能排到 ±19，展示面自然拉长
         val rangeF = (Wdp / 2f + footprintDp) / pitchDp + 2f
-        val baseYDp = 0.30f * coverDp + 0.60f * HDp + 14f
+        // 基线往下压一点：两侧的书 railY 是负值（往上沉），
+        // 加上 pull 抬升，书顶容易超出容器被 Offscreen 图层裁掉
+        val baseYDp = 0.30f * coverDp + 0.60f * HDp + 34f
         val startXDp = Wdp / 2f - footprintDp / 2f + coverDp * 0.84f * 0.66f
 
         val spine = spineDp * density.density
@@ -1193,7 +1203,8 @@ private fun BookCarousel(
             .filter { kotlin.math.abs(relOfStatic(it, slotPos, n)) <= rangeF + 1f }
             .sortedBy { relOfStatic(it, slotPos, n) }
         val bookBoxW = with(density) { (spine + cover * 0.66f).toDp() }
-        val bookBoxH = with(density) { (H + cover * 0.30f + 10f).toDp() }
+        // 盒子要装得下「顶面斜出的角 + 整本书 + 底部留白」，太紧会被 Offscreen 图层裁掉
+        val bookBoxH = with(density) { (H + cover * 0.60f + 20f).toDp() }
         order.forEach { i ->
             val book = books[i]
 
