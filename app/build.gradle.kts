@@ -13,14 +13,28 @@ android {
         applicationId = "com.novelforge.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 65
-        versionName = "0.4.59"
+        versionCode = 66
+        versionName = "0.4.60"
     }
 
+    signingConfigs {
+        create("fixed") {
+            storeFile = rootProject.file("keystore/wenforge.p12")
+            storePassword = "wenforge_ks_2026"
+            keyAlias = "wenforge"
+            keyPassword = "wenforge_ks_2026"
+            storeType = "PKCS12"
+            enableV1Signing = true
+            enableV2Signing = true
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("fixed")
+        }
         release {
-            // 用 debug 签名，方便直接装到手机上对比
-            signingConfig = signingConfigs.getByName("debug")
+            // 固定签名，保证每次构建签名一致，可直接覆盖更新
+            signingConfig = signingConfigs.getByName("fixed")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
