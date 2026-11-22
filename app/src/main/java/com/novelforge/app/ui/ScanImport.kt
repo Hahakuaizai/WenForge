@@ -206,7 +206,7 @@ fun ScanImportScreen(
                                 if (picked.size == novels.size && novels.isNotEmpty()) picked.clear()
                                 else {
                                     picked.clear()
-                                    picked.addAll(novels.map { it.path })
+                                    picked.addAll(novels.map { it.key })
                                 }
                             }
                             .padding(horizontal = 10.dp, vertical = 6.dp)
@@ -362,14 +362,14 @@ fun ScanImportScreen(
                     }
                     // 小说直接列出来
                     items(novelsInGroup, key = { it.key }) { f ->
-                    val on = f.path in picked
+                    val on = f.key in picked
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(16.dp))
                             .background(MaterialTheme.colorScheme.surface)
                             .clickable {
-                                if (on) picked.remove(f.path) else picked.add(f.path)
+                                if (on) picked.remove(f.key) else picked.add(f.key)
                             }
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -442,14 +442,14 @@ fun ScanImportScreen(
                         }
                         if (restOpen) {
                             items(restInGroup, key = { it.key }) { f ->
-                                val on = f.path in picked
+                                val on = f.key in picked
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(14.dp))
                                         .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
                                         .clickable {
-                                            if (on) picked.remove(f.path) else picked.add(f.path)
+                                            if (on) picked.remove(f.key) else picked.add(f.key)
                                         }
                                         .padding(horizontal = 14.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -530,16 +530,19 @@ fun ScanImportScreen(
         if (!importing) return@LaunchedEffect
         var ok = 0
         var fail = 0
+        // picked 存的是 FoundBook.key，先按 key 反查文件
+        val byKey = files.associateBy { it.key }
         withContext(Dispatchers.IO) {
-            picked.forEach { path ->
+            picked.toList().forEach { k ->
+                val found = byKey[k] ?: return@forEach
                 runCatching {
-                    val f = File(path)
-                    val parsed = BookParser.parse(f)
+                    val bytes = BookScanner.readBytes(ctx, found)
+                    val parsed = BookParser.parse(bytes, found.name)
                     if (parsed.chapters.isEmpty()) {
                         fail++
                     } else {
                         withContext(Dispatchers.Main) {
-                            vm.importLocalBook(parsed, f.name.substringBeforeLast('.'))
+                            vm.importLocalBook(parsed, found.name.substringBeforeLast('.'))
                         }
                         ok++
                     }

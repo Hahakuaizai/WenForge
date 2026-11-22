@@ -48,6 +48,19 @@ object BookScanner {
     /** 上一次扫描过程中的错误，给界面显示用 */
     val errs: MutableList<String> = mutableListOf()
 
+    /**
+     * 读文件内容。有 uri 就走 ContentResolver（MediaStore 的文件没有真实路径，
+     * 分区存储下也不给 File 直接读），否则退回按路径读。
+     */
+    fun readBytes(ctx: Context, book: FoundBook): ByteArray {
+        if (book.uri.isNotBlank()) {
+            return ctx.contentResolver.openInputStream(Uri.parse(book.uri))?.use { it.readBytes() }
+                ?: throw IllegalStateException("打不开文件：${book.name}")
+        }
+        if (book.path.isNotBlank()) return File(book.path).readBytes()
+        throw IllegalStateException("没有可用地址：${book.name}")
+    }
+
     private val dirHints = listOf(
         "Download", "Downloads", "Documents", "Books", "Book", "Novels", "Novel",
         "小说", "电子书", "书籍", "书", "小说下载", "本地书籍", "BaiduNetdisk", "Quark",

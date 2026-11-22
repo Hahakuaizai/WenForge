@@ -563,22 +563,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         val ctx = getApplication<Application>()
-        val book = ImportedBook(
-            title = catalog.title.ifBlank { "未命名" },
-            author = catalog.author,
-            sourceUrl = catalog.sourceUrl,
-            origin = "crawl",
-            sourceId = catalog.sourceId,
-            pendingChapters = catalog.chapters.map {
-                com.novelforge.app.data.PendingChapter(it.title, it.url)
-            }
-        )
-        store.data.importedBooks.add(book)
+        val refs = catalog.chapters.map {
+            com.novelforge.app.data.PendingChapter(it.title, it.url)
+        }
+
+        // 已经下过 / 下到一半的同一本书，接着原来那本下，不再新建一本
+        val existing = store.data.importedBooks.firstOrNull {
+            it.origin == "crawl" &&
+                it.title == catalog.title &&
+                (it.sourceId.isEmpty() || it.sourceId == catalog.sourceId)
+        }
+        val book = if (existing != null) {
+            // 换一套新地址表，但保留已下的章节，从断点继续
+            existing.pendingChapters = refs
+            if (existing.sourceUrl.isBlank()) existing.sourceUrl = catalog.sourceUrl
+            if (existing.sourceId.isBlank()) existing.sourceId = catalog.sourceId
+            existing
+        } else {
+            ImportedBook(
+                title = catalog.title.ifBlank { "未命名" },
+                author = catalog.author,
+                sourceUrl = catalog.sourceUrl,
+                origin = "crawl",
+                sourceId = catalog.sourceId,
+                pendingChapters = refs
+            ).also { store.data.importedBooks.add(it) }
+        }
         store.save()
         refresh()
 
         DownloadService.start(ctx, book.id)
-        importStatus = "已在后台开始下载，可以退出这个页面"
+        val done = book.chapters.size
+        importStatus = if (done > 0) {
+            "《${book.title}》已下 $done 章，从第 ${done + 1} 章接着下"
+        } else {
+            "已在后台开始下载，可以退出这个页面"
+        }
         onDone(book.id)
     }
 

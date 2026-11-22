@@ -92,11 +92,13 @@ class DownloadService : Service() {
             return
         }
         val total = refs.size
+        val startAt = book.chapters.size
         var failures = 0
         DownloadHub.state = DownloadState(bookId, book.title, book.chapters.size, total, true)
 
         try {
-            var i = book.chapters.size
+            // 断点：已下多少就从第几章接着抓。新地址表若比已下的短，从末尾接
+            var i = book.chapters.size.coerceAtMost(total)
             while (i < total) {
                 val ref = refs[i]
                 var text = runCatching { Novels.chapter(ref.url, this) }.getOrElse { "" }
@@ -117,7 +119,7 @@ class DownloadService : Service() {
 
                 DownloadHub.state = DownloadState(bookId, book.title, i, total, true)
                 if (book.chapters.size % 10 == 0) store.saveNow()
-                if (i % 5 == 0) notify(buildNotification(book.title, "$i / $total", i, total))
+                if ((i - startAt) % 5 == 0) notify(buildNotification(book.title, "$i / $total", i, total))
                 delay(120)
             }
             // 下完了，把地址表清掉，未下完列表里就不显示它了
