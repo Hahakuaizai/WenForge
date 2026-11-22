@@ -1,5 +1,7 @@
 package com.novelforge.app.ui
 
+import com.novelforge.app.data.WordCount
+
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -26,7 +28,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -53,6 +59,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -62,6 +69,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import kotlin.math.roundToInt
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,7 +85,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.positionChange
 
-/** 书架上的一本书，来源三种：自己写的 / 本地导入 / 爬虫下载 */
+/** 书架上的一本书，来源三种：自己写的 / 本地导入 / 在线书库 */
 data class ShelfItem(
     val id: String,
     val kind: String,
@@ -79,8 +93,40 @@ data class ShelfItem(
     val author: String,
     val words: Int,
     val chapters: Int,
-    val origin: String
+    val origin: String,
+    /** 封面色相：自己写的按题材定，导入的按书名 hash */
+    val hue: Int = 214,
+    /** 封面右上印章字：题材名或来源 */
+    val badge: String = "",
+    /** 封面图上的署名：自己写的用主角名，导入的用作者 */
+    val coverAuthor: String = "",
+    /** 封面底部状态字：COMPLETE / ONGOING / DRAFT */
+    val statusText: String = "ONGOING"
 )
+
+/** 题材 → 封面色相（跟 HTML 复刻版演示书的配色气质对齐） */
+private fun genreHue(genre: String): Int = when (genre) {
+    "玄幻" -> 266
+    "仙侠" -> 158
+    "武侠" -> 20
+    "都市" -> 214
+    "言情" -> 348
+    "科幻" -> 202
+    "悬疑" -> 284
+    "历史" -> 36
+    "末世" -> 96
+    "游戏" -> 230
+    else -> hashHue(genre)
+}
+
+private fun hashHue(s: String): Int = ((s.hashCode() % 360) + 360) % 360
+
+/** 主角设定是「姓名/身份/性格」格式，封面上只取姓名那一段 */
+private fun protagonistName(raw: String): String {
+    val name = raw.split('/', '，', '、', '·', ' ', '：', ':')
+        .firstOrNull()?.trim().orEmpty()
+    return name.take(6).ifBlank { "原创" }
+}
 
 // 黑白灰三档，只用这三种颜色
 private val InkBlack = Color(0xFF15161A)
@@ -98,8 +144,10 @@ fun ShelfScreen(
     onImport: () -> Unit
 ) {
     var filter by rememberSaveable { mutableStateOf("all") }
+    var menuFor by remember { mutableStateOf<ShelfItem?>(null) }
     var pendingDelete by remember { mutableStateOf<ShelfItem?>(null) }
-    var renaming by remember { mutableStateOf<ShelfItem?>(null) }
+    var editingBook by remember { mutableStateOf<ShelfItem?>(null) }
+    var currentBook by remember { mutableStateOf<ShelfItem?>(null) }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
     var showFilter by remember { mutableStateOf(false) }
 
@@ -107,14 +155,26 @@ fun ShelfScreen(
         ShelfItem(
             id = it.id, kind = "novel", title = it.title,
             author = it.genre, words = it.totalWords,
-            chapters = it.finishedChapters, origin = "novel"
+            chapters = it.finishedChapters, origin = "novel",
+            hue = genreHue(it.genre),
+            badge = it.genre,
+            coverAuthor = protagonistName(it.protagonist),
+            statusText = when {
+                it.chapterCount > 0 && it.finishedChapters >= it.chapterCount -> "COMPLETE"
+                it.finishedChapters > 0 -> "ONGOING"
+                else -> "DRAFT"
+            }
         )
     }
     val imported = vm.data.importedBooks.map {
         ShelfItem(
             id = it.id, kind = "imported", title = it.title,
             author = it.author, words = it.totalWords,
-            chapters = it.chapters.size, origin = it.origin
+            chapters = it.chapters.size, origin = it.origin,
+            hue = hashHue(it.title),
+            badge = if (it.origin == "crawl") "网文" else "导入",
+            coverAuthor = it.author.ifBlank { "佚名" },
+            statusText = "COMPLETE"
         )
     }
     val all = (novels + imported).sortedByDescending { it.words }
@@ -124,6 +184,9 @@ fun ShelfScreen(
         "crawl" -> imported.filter { it.origin == "crawl" }
         else -> all
     }
+
+    // 搜索界面按返回键 / 侧滑：回书架首页，不退出应用
+    androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false }
 
     if (searchOpen) {
         ShelfSearch(
@@ -186,6 +249,27 @@ fun ShelfScreen(
                                 )
                             )
                         }
+                        val editSrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                        Box(
+                            Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(Color.White)
+                                .pressScale(editSrc, 0.9f)
+                                .clickable(interactionSource = editSrc, indication = null) {
+                                    val target = currentBook ?: shown.firstOrNull()
+                                    if (target != null) menuFor = target
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = "编辑这本书",
+                                modifier = Modifier.size(17.dp),
+                                tint = InkBlack
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
                         val ssrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                         Box(
                             Modifier
@@ -266,7 +350,7 @@ fun ShelfScreen(
                                 when (filter) {
                                     "novel" -> "我写的"
                                     "local" -> "导入"
-                                    "crawl" -> "爬虫"
+                                    "crawl" -> "网文"
                                     else -> "全部书籍"
                                 },
                                 style = TextStyle(fontSize = 14.sp, color = InkBlack, fontWeight = FontWeight.Medium)
@@ -297,7 +381,7 @@ fun ShelfScreen(
                                 "all" to "全部",
                                 "novel" to "我写的",
                                 "local" to "导入",
-                                "crawl" to "爬虫"
+                                "crawl" to "网文"
                             ).forEach { (k, label) ->
                                 val sel = filter == k
                                 val n = when (k) {
@@ -379,7 +463,8 @@ fun ShelfScreen(
                 BookCarousel(
                     books = shown,
                     onOpen = { onOpen(it.kind, it.id, 0) },
-                    onLongClick = { pendingDelete = it }
+                    onLongClick = { menuFor = it },
+                    onCurrentChange = { currentBook = it }
                 )
                 Spacer(Modifier.height(26.dp))
                 Box(
@@ -394,113 +479,235 @@ fun ShelfScreen(
         }
     }
 
-    pendingDelete?.let { item ->
-        AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text(item.title.ifBlank { "未命名" }) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Row(
+    // ——— 长按书本 / 右上角编辑 → 极简菜单 ———
+    val menuBook = menuFor
+    if (menuBook != null) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = { menuFor = null }) {
+            val appear = remember { Animatable(0f) }
+            LaunchedEffect(menuBook.id) {
+                appear.animateTo(
+                    1f,
+                    androidx.compose.animation.core.spring(
+                        dampingRatio = 0.86f,
+                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                    )
+                )
+            }
+            Column(
+                Modifier
+                    .width(258.dp)
+                    .graphicsLayer {
+                        alpha = appear.value
+                        scaleX = 0.94f + 0.06f * appear.value
+                        scaleY = 0.94f + 0.06f * appear.value
+                        translationY = (1f - appear.value) * 16f
+                    }
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(Color.White)
+                    .padding(6.dp)
+            ) {
+                Text(
+                    menuBook.title.ifBlank { "未命名" },
+                    style = TextStyle(fontSize = 12.sp, color = InkGray),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 4.dp, end = 14.dp)
+                )
+                ShelfMenuRow("改书名", Icons.Default.Edit) {
+                    menuFor = null
+                    editingBook = menuBook
+                }
+                ShelfMenuRow("改作者", Icons.Default.Person) {
+                    menuFor = null
+                    editingBook = menuBook
+                }
+                ShelfMenuRow("打开", Icons.Default.MenuBook) {
+                    menuFor = null
+                    onOpen(menuBook.kind, menuBook.id, 0)
+                }
+                Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(1.dp).background(HairLine))
+                ShelfMenuRow(
+                    if (menuBook.kind == "novel") "删除这部作品" else "从书架删掉",
+                    Icons.Default.Delete,
+                    danger = true
+                ) {
+                    menuFor = null
+                    pendingDelete = menuBook
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+        }
+    }
+
+    // ——— 编辑：书名 + 作者 ———
+    val editing = editingBook
+    if (editing != null) {
+        var titleInput by remember(editing.id) { mutableStateOf(editing.title) }
+        var authorInput by remember(editing.id) {
+            mutableStateOf(
+                if (editing.kind == "novel")
+                    vm.project(editing.id)?.protagonist.orEmpty()
+                else editing.author
+            )
+        }
+        androidx.compose.ui.window.Dialog(onDismissRequest = { editingBook = null }) {
+            val appear = remember { Animatable(0f) }
+            LaunchedEffect(editing.id) {
+                appear.animateTo(
+                    1f,
+                    androidx.compose.animation.core.spring(
+                        dampingRatio = 0.86f,
+                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                    )
+                )
+            }
+            Column(
+                Modifier
+                    .width(300.dp)
+                    .graphicsLayer {
+                        alpha = appear.value
+                        scaleY = 0.95f + 0.05f * appear.value
+                        translationY = (1f - appear.value) * 14f
+                    }
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Color.White)
+                    .padding(18.dp)
+            ) {
+                Text(
+                    "编辑",
+                    style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkBlack)
+                )
+                Spacer(Modifier.height(14.dp))
+                AppTextField(
+                    value = titleInput,
+                    onValueChange = { titleInput = it },
+                    label = { Text("书名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(10.dp))
+                AppTextField(
+                    value = authorInput,
+                    onValueChange = { authorInput = it },
+                    label = { Text(if (editing.kind == "novel") "主角 / 署名" else "作者") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (editing.kind == "novel") "只改封面上的显示，正文不受影响"
+                    else "只改显示，章节内容不变",
+                    style = TextStyle(fontSize = 11.sp, color = InkGray)
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
                         Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                pendingDelete = null
-                                renaming = item
-                            }
+                            .weight(1f)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color(0xFFF1F1EF))
+                            .clickable { editingBook = null }
                             .padding(vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text("改书名", style = TextStyle(fontSize = 15.sp, color = InkBlack))
+                        Text("取消", style = TextStyle(fontSize = 14.sp, color = InkBlack))
                     }
                     Box(
-                        Modifier.fillMaxWidth().height(1.dp).background(HairLine)
-                    )
-                    Row(
                         Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
+                            .weight(1f)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(InkBlack)
                             .clickable {
-                                if (item.kind == "novel") vm.deleteProject(item.id)
-                                else vm.deleteImportedBook(item.id)
-                                pendingDelete = null
+                                vm.updateBookTitle(editing.kind, editing.id, titleInput)
+                                vm.updateBookAuthor(editing.kind, editing.id, authorInput)
+                                editingBook = null
                             }
                             .padding(vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            if (item.kind == "novel") "删除这部作品" else "从书架删掉",
-                            style = TextStyle(fontSize = 15.sp, color = MaterialTheme.colorScheme.error)
+                            "保存",
+                            style = TextStyle(fontSize = 14.sp, color = Color.White, fontWeight = FontWeight.SemiBold)
                         )
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
             }
-        )
+        }
     }
 
-    // 改书名
-    renaming?.let { item ->
-        var input by remember(item.id) { mutableStateOf(item.title) }
+    // ——— 删除确认 ———
+    pendingDelete?.let { item ->
         AlertDialog(
-            onDismissRequest = { renaming = null },
-            title = { Text("改书名") },
+            onDismissRequest = { pendingDelete = null },
+            title = {
+                Text(
+                    if (item.kind == "novel") "删掉《${item.title.ifBlank { "未命名" }}》？"
+                    else "从书架删掉《${item.title.ifBlank { "未命名" }}》？",
+                    style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, color = InkBlack)
+                )
+            },
             text = {
-                Column {
-                    AppTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        label = { Text("书名") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        if (item.kind == "novel") "改的是作品名，正文不受影响"
-                        else "只改显示名，章节内容不变",
-                        style = TextStyle(fontSize = 11.sp, color = InkGray)
-                    )
-                }
+                Text(
+                    if (item.kind == "novel") "正文和章节都会一起删掉，删了找不回来。"
+                    else "只删手机里的这一份，原网站的内容不受影响。",
+                    style = TextStyle(fontSize = 12.sp, color = InkGray)
+                )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val name = input.trim().ifBlank { "未命名" }
-                    if (item.kind == "novel") {
-                        vm.project(item.id)?.let { pj ->
-                            pj.title = name
-                            vm.updateProjectInfo(pj)
-                        }
-                    } else {
-                        vm.renameImportedBook(item.id, name)
-                    }
-                    renaming = null
-                }) { Text("保存") }
+                    if (item.kind == "novel") vm.deleteProject(item.id)
+                    else vm.deleteImportedBook(item.id)
+                    pendingDelete = null
+                }) { Text("删除", color = Color(0xFFB4402F)) }
             },
             dismissButton = {
-                TextButton(onClick = { renaming = null }) { Text("取消") }
+                TextButton(onClick = { pendingDelete = null }) { Text("取消", color = InkBlack) }
             }
         )
     }
 }
 
+@Composable
+private fun ShelfMenuRow(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    danger: Boolean = false,
+    onClick: () -> Unit
+) {
+    val color = if (danger) Color(0xFFB4402F) else InkBlack
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = color)
+        Spacer(Modifier.width(12.dp))
+        Text(label, style = TextStyle(fontSize = 14.sp, color = color))
+    }
+}
+
 /**
- * 立体书架。
- *
- * 几何与动效 1:1 移植轻小说文库（ArchiveShelfGeometry / ArchiveWave /
- * ArchiveScrollSimulation）：
- *  - 书尺寸固定：spine=W*.043、cover=W*.32、H=(cover-20)*166/118+54
+ * 立体书架（按轻小说文库原作 + HTML 复刻版的行为规格实现）：
+ *  - 几何：spine=W*.043、cover=W*.32、H=(cover-20)*166/118+54
  *  - 中心书按余弦权重 w 沿深度轴抽出：pull = cover*.84*w*(1.24-.24w)
  *  - 两侧按 railY(d)=d*2.5+d²*0.45 下沉成弧线
- *  - 松手后走三段惯性：指数减速 → 三次着陆 → 指数弹簧
+ *  - 拖动实时跟手（pos = 按下位置 - 位移/pitch），松手走三段惯性 settle：
+ *    指数减速 → 三次着陆 → 指数弹簧（dragRate=4.4，omega=12，交接速度 4 槽/秒）
+ *  - 滑动跨槽位时轻震一下（65ms 节流）
+ *  - 点击按书的实体多边形命中：点中心书打开，点侧书用 380ms 贝塞尔把它转到中心
+ *  - 长按命中哪本就弹哪本的菜单
+ *  - 入场 720ms：每本沿深度轴错峰滑入，抽出权重带 crest 渐显
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BookCarousel(
     books: List<ShelfItem>,
     onOpen: (ShelfItem) -> Unit,
-    onLongClick: (ShelfItem) -> Unit
+    onLongClick: (ShelfItem) -> Unit,
+    onCurrentChange: (ShelfItem) -> Unit = {}
 ) {
     val n = books.size
     if (n == 0) return
@@ -508,12 +715,52 @@ private fun BookCarousel(
     val appCtx = androidx.compose.ui.platform.LocalContext.current
     val density = androidx.compose.ui.platform.LocalDensity.current
 
-    // 位置以「书槽」为单位，pos 是浮点索引
+    // 位置以「书槽」为单位，pos 是浮点索引（可无限增长，relOf 里取模绕回）
     var pos by remember(n) { mutableFloatStateOf(0f) }
-    var dragStartPos by remember { mutableFloatStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var animJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var lastTickMs by remember { mutableStateOf(0L) }
+
+    // 入场：elapsed 0→1.45（对应 HTML 的 (now-start)/720，1.4 后结束）
+    val enter = remember(n) { Animatable(0f) }
+    LaunchedEffect(n) {
+        enter.snapTo(0f)
+        enter.animateTo(1.45f, tween(1050, easing = LinearEasing))
+    }
+
+    fun launchAnim(block: suspend () -> Unit) {
+        animJob?.cancel()
+        animJob = scope.launch { block() }
+    }
+
+    /** 点侧书 / 步进按钮：380ms 贝塞尔（带一点过冲，跟原作一致） */
+    suspend fun animatePosTo(dest: Float) {
+        val a = Animatable(pos)
+        a.animateTo(
+            dest,
+            tween(380, easing = CubicBezierEasing(0.2f, 1.06f, 0.35f, 1f))
+        ) { pos = value }
+    }
+
+    // 告诉外面当前停在哪本（编辑按钮要用）
+    LaunchedEffect(n, pos.roundToInt()) {
+        val idx = ((pos.roundToInt() % n) + n) % n
+        books.getOrNull(idx)?.let(onCurrentChange)
+    }
+
+    // 跨槽位震动：拖动和惯性滑动时，中心书变了就轻震一下
+    LaunchedEffect(n) {
+        snapshotFlow { pos.roundToInt() }.collect {
+            if (dragging || animJob?.isActive == true) {
+                val now = System.currentTimeMillis()
+                if (now - lastTickMs >= 65L) {
+                    lastTickMs = now
+                    Haptics.tick(appCtx)
+                }
+            }
+        }
+    }
 
     BoxWithConstraints(Modifier.fillMaxWidth().height(400.dp)) {
         val Wdp = maxWidth.value
@@ -531,9 +778,64 @@ private fun BookCarousel(
         val pitch = pitchDp * density.density
         val baseY = baseYDp * density.density
         val startX = startXDp * density.density
+        val slidePx = 56f * density.density
 
-        // 手势统一在这一层处理：拖动 / 点击 / 长按
-        // 书本身不再挂 clickable，否则会把拖动吞掉
+        fun wave(ad: Float): Float {
+            if (ad >= 1.48f) return 0f
+            val c = kotlin.math.cos(ad / 1.48f * Math.PI.toFloat() / 2f)
+            return c * c
+        }
+
+        fun railY(d: Float): Float = (d * 2.5f + d * d * 0.45f).coerceIn(-24f, 56f)
+
+        /** 第 i 本书左上角的坐标（渲染和命中测试共用同一套数学） */
+        fun bookOrigin(i: Int, p: Float, enterV: Float): Pair<Float, Float> {
+            val d = relOfStatic(i, p, n)
+            val ad = kotlin.math.abs(d)
+            var w = wave(ad)
+            var slide = 0f
+            if (enterV < 1.4f) {
+                val lp = ((enterV - i * 0.018f) / 0.52f).coerceIn(0f, 1f)
+                val e = 1f - (1f - lp) * (1f - lp) * (1f - lp)
+                slide = (1f - e) * slidePx
+                w *= ((lp - 0.38f) / 0.62f).coerceIn(0f, 1f)
+            }
+            val pull = cover * 0.84f * w * (1.24f - 0.24f * w)
+            val lift = w * w * (3f - 2f * w)
+            val x = startX + d * pitch - pull * 0.66f + slide * 0.66f
+            val y = baseY + railY(d) + 0.30f * pull - 0.60f * H * lift + slide * -0.30f
+            return x to y
+        }
+
+        /** 点 (px,py) 命中了哪本书：按书的实体多边形测，离中心最近的优先 */
+        fun bookAt(px: Float, py: Float, p: Float): Int? {
+            val dx = cover * 0.66f
+            val dy = cover * -0.30f
+            val skew = spine * 0.1f
+            // 实体轮廓：书脊 + 顶面 + 封面的并集（原作 _solidPath 同款）
+            val poly = floatArrayOf(
+                0f, 0f,
+                dx, dy,
+                spine + dx, skew + dy,
+                spine + dx, skew + dy + H,
+                spine, skew + H,
+                0f, H
+            )
+            var best: Int? = null
+            var bestAd = Float.MAX_VALUE
+            for (i in books.indices) {
+                val ad = kotlin.math.abs(relOfStatic(i, p, n))
+                if (ad > 6.2f || ad >= bestAd) continue
+                val (bx, by) = bookOrigin(i, p, 1.45f)
+                if (pointInPolygon(px - bx, py - by, poly)) {
+                    best = i
+                    bestAd = ad
+                }
+            }
+            return best
+        }
+
+        // 手势统一在这一层处理：跟手拖动 / 惯性 / 点击命中 / 长按命中
         Box(
             Modifier
                 .fillMaxSize()
@@ -546,92 +848,72 @@ private fun BookCarousel(
                         var totalDx = 0f
                         var draggingNow = false
                         var longFired = false
-                        val downTime = System.currentTimeMillis()
+                        val downTime = down.uptimeMillis
+                        val tracker = VelocityTracker()
+                        tracker.addPosition(down.uptimeMillis, down.position)
 
-                        // 长按计时（不阻塞拖动判定）
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
 
                             if (change.pressed) {
+                                tracker.addPosition(change.uptimeMillis, change.position)
                                 totalDx += change.positionChange().x
                                 if (!draggingNow && kotlin.math.abs(totalDx) > slop) {
                                     draggingNow = true
                                     dragging = true
-                                    dragStartPos = downPos
                                 }
                                 if (draggingNow) {
-                                    // 只累积位移，不实时跟手
+                                    // 实时跟手：手指左移 → pos 增大（下一本）
+                                    pos = downPos - totalDx / pitch
                                     change.consume()
                                 } else if (!longFired &&
-                                    System.currentTimeMillis() - downTime > 480L
+                                    change.uptimeMillis - downTime > 480L
                                 ) {
                                     longFired = true
-                                    // 找按在哪本书上
-                                    val idx = nearestIndex(pos, n)
+                                    val idx = bookAt(down.position.x, down.position.y, pos)
+                                        ?: nearestIndex(pos, n)
                                     Haptics.longPress(appCtx)
                                     onLongClick(books[idx])
                                 }
                             } else {
-                                // 抬手
                                 if (draggingNow) {
                                     dragging = false
-                                    // 一次手势只翻一格：往左滑 next，往右滑 prev
-                                    val dir = when {
-                                        totalDx <= -slop * 2 -> 1
-                                        totalDx >= slop * 2 -> -1
-                                        else -> 0
-                                    }
-                                    if (dir != 0) {
-                                        Haptics.tick(appCtx)
-                                        animJob = scope.launch {
-                                            springTo(pos, pos.roundToInt() + dir.toFloat()) { v -> pos = v }
-                                        }
+                                    val velSlots = -tracker.calculateVelocity().x / pitch
+                                    launchAnim {
+                                        settleSlots(pos, velSlots, 50f / pitch) { v -> pos = v }
                                     }
                                 } else if (!longFired) {
-                                    // 点击：算落点离哪本书最近
-                                    val idx = nearestIndex(pos, n)
-                                    val d = relOfStatic(idx, pos, n)
-                                    if (kotlin.math.abs(d) < 0.5f) {
-                                        onOpen(books[idx])
-                                    } else {
-                                        Haptics.select(appCtx)
-                                        animJob = scope.launch {
-                                            springTo(pos, pos + d) { v -> pos = v }
+                                    // 点击：命中哪本算哪本
+                                    val idx = bookAt(down.position.x, down.position.y, pos)
+                                    if (idx != null) {
+                                        val d = relOfStatic(idx, pos, n)
+                                        if (kotlin.math.abs(d) < 0.5f) {
+                                            onOpen(books[idx])
+                                        } else {
+                                            Haptics.select(appCtx)
+                                            launchAnim { animatePosTo(pos + d) }
                                         }
                                     }
                                 }
                                 break
                             }
                         }
+                        if (draggingNow) dragging = false
                     }
                 }
         )
 
-        // 画书：每本只画一次，位置用取模绕回另一侧实现循环
-        fun relOf(i: Int, p: Float): Float {
-            val raw = i - p
-            return ((raw + n / 2f) % n + n) % n - n / 2f
-        }
+        // 画书：远的先画（遮挡顺序按 |d| 降序）
+        val enterV = enter.value
         val order = books.indices.sortedByDescending {
-            kotlin.math.abs(relOf(it, pos))
+            kotlin.math.abs(relOfStatic(it, pos, n))
         }
         order.forEach { i ->
-            val d = relOf(i, pos)
-            val ad = kotlin.math.abs(d)
-            if (ad > 6.2f) return@forEach
+            val d = relOfStatic(i, pos, n)
+            if (kotlin.math.abs(d) > 6.2f) return@forEach
 
-            val w = if (ad < 1.48f) {
-                val c = kotlin.math.cos(ad / 1.48f * Math.PI.toFloat() / 2f)
-                c * c
-            } else 0f
-            val pull = cover * 0.84f * w * (1.24f - 0.24f * w)
-            val lift = w * w * (3f - 2f * w)
-            val railY = (d * 2.5f + d * d * 0.45f).coerceIn(-24f, 56f)
-
-            val x = startX + d * pitch - pull * 0.66f
-            val y = baseY + railY + 0.30f * pull - 0.60f * H * lift
-
+            val (x, y) = bookOrigin(i, pos, enterV)
             val book = books[i]
 
             Box(
@@ -643,7 +925,10 @@ private fun BookCarousel(
                 BookSolid(
                     title = book.title,
                     no = i + 1,
-                    origin = book.origin,
+                    hue = book.hue,
+                    badge = book.badge,
+                    coverAuthor = book.coverAuthor,
+                    statusText = book.statusText,
                     serial = "WK-${kotlin.math.abs(book.id.hashCode()) % 100000000}",
                     spinePx = spine,
                     coverPx = cover,
@@ -660,7 +945,7 @@ private fun BookCarousel(
     Column(Modifier.padding(horizontal = 24.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "\u300a${cur.title}\u300b",
+                "《${cur.title}》",
                 style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, color = InkBlack),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -678,14 +963,14 @@ private fun BookCarousel(
             buildString {
                 append(
                     when (cur.origin) {
-                        "novel" -> "\u539f\u521b\u4f5c\u54c1"
-                        "crawl" -> "\u7f51\u7edc\u6293\u53d6"
-                        else -> "\u672c\u5730\u4e66\u7c4d"
+                        "novel" -> "原创作品"
+                        "crawl" -> "在线书库"
+                        else -> "本地书籍"
                     }
                 )
-                append(" \u00b7 ")
-                append(if (cur.chapters > 0) "${cur.chapters} \u7ae0" else "\u672a\u5f00\u59cb")
-                if (cur.words > 0) append(" \u00b7 ${cur.words} \u5b57")
+                append(" · ")
+                append(if (cur.chapters > 0) "${cur.chapters} 章" else "未开始")
+                if (cur.words > 0) append(" · ${WordCount.label(cur.words)}")
             },
             style = TextStyle(fontSize = 11.sp, color = InkGray)
         )
@@ -697,14 +982,11 @@ private fun BookCarousel(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            "\u2039",
+            "‹",
             style = TextStyle(fontSize = 18.sp, color = InkBlack),
             modifier = Modifier
                 .clickable {
-                    animJob?.cancel()
-                    animJob = scope.launch {
-                        springTo(pos, pos.roundToInt() - 1f) { v -> pos = v }
-                    }
+                    launchAnim { animatePosTo(pos.roundToInt() - 1f) }
                 }
                 .padding(horizontal = 10.dp, vertical = 4.dp)
         )
@@ -713,20 +995,34 @@ private fun BookCarousel(
             style = TextStyle(fontSize = 11.sp, color = InkGray, letterSpacing = 1.sp)
         )
         Text(
-            "\u203a",
+            "›",
             style = TextStyle(fontSize = 18.sp, color = InkBlack),
             modifier = Modifier
                 .clickable {
-                    animJob?.cancel()
-                    animJob = scope.launch {
-                        springTo(pos, pos.roundToInt() + 1f) { v -> pos = v }
-                    }
+                    launchAnim { animatePosTo(pos.roundToInt() + 1f) }
                 }
                 .padding(horizontal = 10.dp, vertical = 4.dp)
         )
     }
 }
 
+/** 点是否在多边形内（射线法）；poly 是 [x0,y0,x1,y1,...] */
+private fun pointInPolygon(px: Float, py: Float, poly: FloatArray): Boolean {
+    var inside = false
+    var j = poly.size - 2
+    var i = 0
+    while (i < poly.size) {
+        val xi = poly[i]; val yi = poly[i + 1]
+        val xj = poly[j]; val yj = poly[j + 1]
+        if ((yi > py) != (yj > py)) {
+            val xCross = (xj - xi) * (py - yi) / (yj - yi) + xi
+            if (px < xCross) inside = !inside
+        }
+        j = i
+        i += 2
+    }
+    return inside
+}
 
 /** 当前位置最近的整数槽位（取模） */
 private fun nearestIndex(pos: Float, n: Int): Int {
@@ -740,7 +1036,7 @@ private fun relOfStatic(i: Int, pos: Float, n: Int): Float {
     return ((raw + n / 2f) % n + n) % n - n / 2f
 }
 
-/** 指数弹簧：dest + (A + B*t) * e^(-omega*t)，跟 HTML 里那段一致 */
+/** 指数弹簧：dest + A * e^(-omega*t)，低速收尾用 */
 private suspend fun springTo(
     from: Float,
     dest: Float,
@@ -751,7 +1047,7 @@ private suspend fun springTo(
     var t = 0f
     val step = 0.016f
     while (true) {
-        val v = dest + (A + 0f * t) * kotlin.math.exp(-omega * t)
+        val v = dest + A * kotlin.math.exp(-omega * t)
         onUpdate(v)
         if (kotlin.math.abs(v - dest) < 0.004f && t > 0.18f) {
             onUpdate(dest)
@@ -767,36 +1063,32 @@ private suspend fun springTo(
 }
 
 /**
- * 松手后的三段惯性：
- *  1) 高速段：pos0 + (v/rate)*(1-e^(-rate*t))，rate=4.4
- *  2) 着陆段：三次缓出 dest - (dest-hp)*u³
- *  3) 低速段：指数弹簧收敛到 dest
+ * 松手后的三段惯性（槽位单位，公式与原作 ArchiveScrollSimulation 一致）：
+ *  1) 高速段：指数减速 pos0 + (v/rate)*(1-e^(-rate*t))，rate=4.4，减到交接速度 4 槽/秒
+ *  2) 着陆段：三次缓出 dest - (dest-hp)*u³，时长由交接速度决定，落点带跑道修正
+ *  3) 低速段：指数弹簧收敛到整数槽位
  */
-private suspend fun settle(
+private suspend fun settleSlots(
     pos0: Float,
     velocity: Float,
-    pitch: Float,
-    n: Int,
+    minVel: Float,
     onUpdate: (Float) -> Unit
 ) {
     val rate = 4.4f
     val omega = 12f
-    val minVel = 50f
     val release = if (kotlin.math.abs(velocity) >= minVel) velocity else 0f
 
-    fun snap(p: Float): Float = p.roundToInt().toFloat()
-
     if (release == 0f) {
-        springTo(pos0, snap(pos0), omega, onUpdate)
+        springTo(pos0, pos0.roundToInt().toFloat(), omega, onUpdate)
         return
     }
 
-    val handoffSpeed = pitch * 4f
+    val handoffSpeed = 4f // 槽/秒（原作 pitch*4 px/s 换算到槽位）
     var hPos = pos0
     var hVel = release
 
     if (kotlin.math.abs(release) > handoffSpeed) {
-        val cd = (kotlin.math.ln(kotlin.math.abs(release) / handoffSpeed) / rate)
+        val cd = kotlin.math.ln(kotlin.math.abs(release) / handoffSpeed) / rate
         val t0 = System.nanoTime()
         while (true) {
             val t = (System.nanoTime() - t0) / 1e9f
@@ -808,11 +1100,11 @@ private suspend fun settle(
         hVel = kotlin.math.sign(release) * handoffSpeed
     }
 
-    // dest：落点对齐到整数槽位
+    // 落点：先按摩擦外推猜，再做跑道修正，保证顺着滑动方向单调前进
     val guess = hPos + hVel / rate
-    var dest = snap(guess)
+    var dest = guess.roundToInt().toFloat()
     if ((dest - hPos) * kotlin.math.sign(hVel) < kotlin.math.abs(hVel) / omega) {
-        dest = snap(hPos + hVel / omega)
+        dest = (hPos + hVel / omega).roundToInt().toFloat()
     }
 
     val landDur = if (hVel != 0f) 3f * (dest - hPos) / hVel else -1f
@@ -831,21 +1123,71 @@ private suspend fun settle(
     }
 }
 
+/** HSL → ARGB（封面渐变用，h 可超 360） */
+private fun hslColor(h: Float, s: Float, l: Float): Int {
+    val hh = ((h % 360f) + 360f) % 360f / 60f
+    val c = (1f - kotlin.math.abs(2f * l - 1f)) * s
+    val x = c * (1f - kotlin.math.abs(hh % 2f - 1f))
+    val m = l - c / 2f
+    val (r, g, b) = when {
+        hh < 1f -> Triple(c, x, 0f)
+        hh < 2f -> Triple(x, c, 0f)
+        hh < 3f -> Triple(0f, c, x)
+        hh < 4f -> Triple(0f, x, c)
+        hh < 5f -> Triple(x, 0f, c)
+        else -> Triple(c, 0f, x)
+    }
+    return android.graphics.Color.rgb(
+        ((r + m) * 255f).roundToInt().coerceIn(0, 255),
+        ((g + m) * 255f).roundToInt().coerceIn(0, 255),
+        ((b + m) * 255f).roundToInt().coerceIn(0, 255)
+    )
+}
+
+/** BookSolid 复用的画笔（避免每帧重建 Paint） */
+private class ShelfPaints {
+    val fill = android.graphics.Paint().apply { isAntiAlias = true }
+    val stroke = android.graphics.Paint().apply {
+        isAntiAlias = true
+        style = android.graphics.Paint.Style.STROKE
+    }
+    val mono = android.graphics.Paint().apply {
+        isAntiAlias = true
+        typeface = android.graphics.Typeface.MONOSPACE
+    }
+    val serif = android.graphics.Paint().apply {
+        isAntiAlias = true
+        typeface = android.graphics.Typeface.create(
+            android.graphics.Typeface.SERIF, android.graphics.Typeface.BOLD
+        )
+    }
+    val serifPlain = android.graphics.Paint().apply {
+        isAntiAlias = true
+        typeface = android.graphics.Typeface.SERIF
+    }
+}
+
 /**
- * 一本书：白色书脊 + 白色封面（中间一块黑色封面图）+ 顶部书页。
+ * 一本书：书脊 + 封面 + 顶部书页，封面按 HTML 复刻版的版式：
+ * 白底，顶行左 NO. 编号、右陶土色印章（题材/来源）；中间一块色相渐变封面图
+ * （158° 三段渐变，左上 VOL.1、右侧竖排书名、左下署名）；底行左序列号、右状态字。
  * 封面用矩阵压成平行四边形，跟等距投影一致。
  */
 @Composable
 private fun BookSolid(
     title: String,
     no: Int,
-    origin: String,
+    hue: Int,
+    badge: String,
+    coverAuthor: String,
+    statusText: String,
     serial: String,
     spinePx: Float,
     coverPx: Float,
     hPx: Float
 ) {
     val density = androidx.compose.ui.platform.LocalDensity.current
+    val paints = remember { ShelfPaints() }
     val dx = coverPx * 0.66f
     val dy = coverPx * -0.30f
     val skew = spinePx * 0.1f
@@ -853,6 +1195,8 @@ private fun BookSolid(
     Box(Modifier.fillMaxSize()) {
         Canvas(Modifier.fillMaxSize()) {
             val canvas = drawContext.canvas.nativeCanvas
+            val fill = paints.fill
+            val stroke = paints.stroke
 
             // 顶面（书页）
             val top = Path().apply {
@@ -865,31 +1209,25 @@ private fun BookSolid(
             drawPath(
                 top,
                 Brush.verticalGradient(
-                    listOf(Color(0xFFFDFCF9), Color(0xFFEFE8D8)),
+                    listOf(Color(0xFFFEFDF8), Color(0xFFE3DFD3)),
                     startY = skew + dy,
                     endY = 0f
                 )
             )
-            drawPath(top, Color(0xFFB0A084).copy(alpha = 0.4f), style = Stroke(0.8f))
+            drawPath(top, Color(0xFF9A927F).copy(alpha = 0.28f), style = Stroke(0.8f))
 
-            // 书脊
-            // 书脊：白底，左缘一道木色
+            // 书脊：米白底，右缘一道发丝线
             drawRect(
-                Color(0xFFF6F3EC),
+                Color(0xFFF2F0E9),
                 topLeft = Offset(0f, 0f),
                 size = Size(spinePx, hPx)
             )
-            drawRect(
-                Color(0xFFD9C9AC),
-                topLeft = Offset(0f, 0f),
-                size = Size(spinePx * 0.22f, hPx)
-            )
             drawLine(
-                Color(0x40B8A07C),
-                Offset(spinePx, 0f), Offset(spinePx, hPx), 0.8f
+                Color(0xFF9A927F).copy(alpha = 0.35f),
+                Offset(spinePx - 0.5f, 0f), Offset(spinePx - 0.5f, hPx), 1f
             )
 
-            // 封面：原木色底 + 左侧深色竖条，右侧留白写书名
+            // 封面（矩阵压成平行四边形，以下都是封面本地坐标）
             val m = android.graphics.Matrix()
             m.setValues(
                 floatArrayOf(
@@ -901,132 +1239,182 @@ private fun BookSolid(
             canvas.save()
             canvas.concat(m)
 
-            // 底色：白
-            canvas.drawRect(0f, 0f, coverPx, hPx, android.graphics.Paint().apply {
-                color = android.graphics.Color.rgb(0xFD, 0xFC, 0xF9)
-                isAntiAlias = true
-            })
-            // 外框：淡木色
-            canvas.drawRect(
-                0.5f, 0.5f, coverPx - 0.5f, hPx - 0.5f,
-                android.graphics.Paint().apply {
-                    color = android.graphics.Color.argb(0x40, 0xB8, 0xA0, 0x7C)
-                    style = android.graphics.Paint.Style.STROKE
-                    strokeWidth = 1f
-                    isAntiAlias = true
-                }
-            )
+            // u = HTML 里的 1 个 CSS 像素（封面宽按 128 计）
+            val u = coverPx / 128f
+            val padX = 10f * u
+            val padTop = 9f * u
 
-            val padH = coverPx * 0.12f
+            // 底色 + 内框
+            fill.shader = null
+            fill.color = android.graphics.Color.rgb(0xFE, 0xFD, 0xF8)
+            canvas.drawRect(0f, 0f, coverPx, hPx, fill)
+            stroke.color = android.graphics.Color.argb(56, 154, 146, 127)
+            stroke.strokeWidth = 1f * u
+            canvas.drawRect(0.5f * u, 0.5f * u, coverPx - 0.5f * u, hPx - 0.5f * u, stroke)
 
-            // 编号下方一条短木色横线，代替原来的竖条
-            canvas.drawRect(
-                padH, hPx * 0.155f,
-                padH + coverPx * 0.16f, hPx * 0.155f + 2f,
-                android.graphics.Paint().apply {
-                    color = android.graphics.Color.rgb(0xC9, 0xB2, 0x8C)
-                    isAntiAlias = true
-                }
-            )
+            // 顶行：左 NO. 编号
+            val mono = paints.mono
+            mono.textSize = 7f * u
+            mono.letterSpacing = 0.06f
+            mono.color = android.graphics.Color.rgb(0x8A, 0x85, 0x78)
+            canvas.drawText("NO.${String.format("%03d", no)}", padX, padTop + 7f * u, mono)
 
-            val textLeft = padH
-            val tp = android.graphics.Paint().apply { isAntiAlias = true }
-
-            // 顶部编号
-            tp.textSize = 7.5f
-            tp.color = android.graphics.Color.rgb(0x9A, 0x9E, 0xA4)
-            canvas.drawText("NO.${String.format("%03d", no)}", textLeft, padH + 8f, tp)
-
-            if (title.isNotBlank()) {
-                val availW = coverPx - textLeft - padH
-                val textSize = 15f
-                tp.textSize = textSize
-                tp.isFakeBoldText = true
-                tp.color = android.graphics.Color.rgb(0x1B, 0x1C, 0x21)
-
-                val maxChars = (availW / textSize).toInt().coerceAtLeast(2)
-                val lines = mutableListOf<String>()
-                var rest = title.take(maxChars * 3)
-                while (rest.isNotEmpty() && lines.size < 3) {
-                    lines.add(rest.take(maxChars))
-                    rest = rest.drop(maxChars)
-                }
-                val lineH = textSize * 1.36f
-                val blockH = lines.size * lineH
-                var ty = hPx * 0.50f - blockH / 2f + textSize
-                lines.forEach { ln ->
-                    canvas.drawText(ln, textLeft, ty, tp)
-                    ty += lineH
-                }
-
-                tp.isFakeBoldText = false
-                tp.textSize = 7.5f
-                tp.color = android.graphics.Color.rgb(0x9A, 0x9E, 0xA4)
-                val sub = when (origin) {
-                    "novel" -> "原创作品"
-                    "crawl" -> "网络抓取"
-                    else -> "本地书籍"
-                }
-                canvas.drawText(sub, textLeft, ty + 3f, tp)
-            } else {
-                // 没书名：中间一个木色方块占位
-                canvas.drawRect(
-                    textLeft, hPx * 0.42f,
-                    coverPx - padH, hPx * 0.50f,
-                    android.graphics.Paint().apply {
-                        color = android.graphics.Color.rgb(0xDD, 0xD0, 0xB8)
-                        isAntiAlias = true
-                    }
-                )
+            // 顶行右：印章（题材 / 来源）
+            val badgePaint = paints.serifPlain
+            badgePaint.textSize = 7f * u
+            badgePaint.letterSpacing = 0.12f
+            badgePaint.color = android.graphics.Color.rgb(0x9A, 0x4A, 0x2F)
+            val badgeH = 7f * u * 1.5f + 2f * u
+            if (badge.isNotBlank()) {
+                val badgeW = badgePaint.measureText(badge) + 6f * u
+                val bx = coverPx - padX - badgeW
+                stroke.color = android.graphics.Color.argb(115, 154, 74, 47)
+                stroke.strokeWidth = 1f * u
+                canvas.drawRoundRect(bx, padTop, bx + badgeW, padTop + badgeH, 2f * u, 2f * u, stroke)
+                canvas.drawText(badge, bx + 3f * u, padTop + badgeH / 2f + 7f * u * 0.36f, badgePaint)
             }
 
-            // 底部序列号
-            tp.textSize = 6.5f
-            tp.color = android.graphics.Color.argb(0x40, 0x9A, 0x9E, 0xA4)
-            canvas.drawText(serial, textLeft, hPx - padH - 1f, tp)
+            // 封面图：色相渐变（158° 三段）
+            val artX = padX
+            val artW = coverPx - 20f * u
+            val artH = artW * 166f / 118f
+            val artY = padTop + badgeH + 5f * u
+            fill.shader = android.graphics.LinearGradient(
+                artX, artY,
+                artX + artW * 0.375f, artY + artH * 0.927f,
+                intArrayOf(
+                    hslColor(hue.toFloat(), 0.46f, 0.74f),
+                    hslColor(hue + 24f, 0.44f, 0.56f),
+                    hslColor(hue + 48f, 0.42f, 0.40f)
+                ),
+                floatArrayOf(0f, 0.52f, 1f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(artX, artY, artX + artW, artY + artH, fill)
+            fill.shader = null
+            stroke.color = android.graphics.Color.argb(31, 43, 40, 34)
+            stroke.strokeWidth = 1f * u
+            canvas.drawRect(artX, artY, artX + artW, artY + artH, stroke)
+
+            // 图上左上：VOL.1
+            mono.textSize = 7f * u
+            mono.letterSpacing = 0.08f
+            mono.color = android.graphics.Color.argb(217, 255, 253, 246)
+            canvas.drawText("VOL.1", artX + 7f * u, artY + 15f * u, mono)
+
+            // 图上右侧：竖排书名（白色粗衬线，带投影）
+            if (title.isNotBlank()) {
+                val serif = paints.serif
+                serif.textSize = 13.5f * u
+                serif.color = android.graphics.Color.rgb(0xFF, 0xFD, 0xF6)
+                serif.setShadowLayer(6f * u, 0f, 1f * u, android.graphics.Color.argb(115, 30, 25, 18))
+                val colX = artX + artW - 7f * u - 13.5f * u
+                var cy = artY + 8f * u + 13.5f * u * 0.92f
+                for (ch in title) {
+                    if (cy > artY + artH - 12f * u) break
+                    canvas.drawText(ch.toString(), colX, cy, serif)
+                    cy += 13.5f * u * 1.32f
+                }
+                serif.clearShadowLayer()
+            }
+
+            // 图上左下：署名（主角名 / 作者）
+            if (coverAuthor.isNotBlank()) {
+                val sp = paints.serifPlain
+                sp.textSize = 8f * u
+                sp.letterSpacing = 0.2f
+                sp.color = android.graphics.Color.argb(235, 255, 253, 246)
+                sp.setShadowLayer(4f * u, 0f, 1f * u, android.graphics.Color.argb(128, 30, 25, 18))
+                canvas.drawText(coverAuthor, artX + 7f * u, artY + artH - 6f * u, sp)
+                sp.clearShadowLayer()
+                sp.letterSpacing = 0f
+            }
+
+            // 底行：左序列号，右状态字
+            mono.textSize = 6.5f * u
+            mono.letterSpacing = 0.1f
+            mono.color = android.graphics.Color.rgb(0xA3, 0x9C, 0x8A)
+            val codeY = hPx - 8f * u
+            canvas.drawText(serial, padX, codeY, mono)
+            if (statusText.isNotBlank()) {
+                val sw = mono.measureText(statusText)
+                canvas.drawText(statusText, coverPx - padX - sw, codeY, mono)
+            }
+            mono.letterSpacing = 0f
 
             canvas.restore()
         }
 
-        // 书脊：上端编号、中间书名（没书名就不写）、下端圆点
+        // 书脊文字：上编号、中竖排书名（超 7 字加 …）、下圆点
         Column(
             Modifier
                 .width(with(density) { spinePx.toDp() })
                 .height(with(density) { hPx.toDp() })
-                .padding(vertical = 9.dp),
+                .padding(vertical = 7.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
                 String.format("%02d", no),
-                style = TextStyle(fontSize = 6.sp, color = Color(0xFF9A9EA4)),
+                style = TextStyle(fontSize = 7.5.sp, color = Color(0xFF9A927E)),
                 maxLines = 1
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
             if (title.isNotBlank()) {
+                val spineTitle = title.take(7) + if (title.length > 7) "…" else ""
                 Text(
-                    title.take(6).toCharArray().joinToString("\n"),
+                    spineTitle.toCharArray().joinToString("\n"),
                     style = TextStyle(
                         fontSize = 10.sp,
-                        lineHeight = 13.sp,
-                        color = Color(0xFF1B1C21),
+                        lineHeight = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF4A463C),
                         letterSpacing = 0.sp
                     ),
                     textAlign = TextAlign.Center,
-                    maxLines = 7
+                    maxLines = 8
                 )
             }
             Spacer(Modifier.weight(1f))
             Box(
                 Modifier
-                    .size(2.dp)
+                    .size(3.5.dp)
                     .clip(androidx.compose.foundation.shape.CircleShape)
-                    .background(Color(0xFFB8A07C).copy(alpha = 0.6f))
+                    .background(Color(0xFFB9B09A))
             )
         }
     }
 }
 
+
 // ── 搜索 ────────────────────────────────────────────────────────
+
+/** 把命中的词标出来 */
+private fun hl(text: String, q: String, hi: androidx.compose.ui.graphics.Color): androidx.compose.ui.text.AnnotatedString =
+    androidx.compose.ui.text.buildAnnotatedString {
+        if (q.isBlank() || text.isBlank()) {
+            append(text)
+            return@buildAnnotatedString
+        }
+        val lower = text.lowercase()
+        val needle = q.lowercase()
+        var i = 0
+        while (true) {
+            val j = lower.indexOf(needle, i)
+            if (j < 0) {
+                append(text.substring(i))
+                break
+            }
+            append(text.substring(i, j))
+            withStyle(
+                androidx.compose.ui.text.SpanStyle(
+                    color = hi,
+                    fontWeight = FontWeight.SemiBold,
+                    background = hi.copy(alpha = 0.16f)
+                )
+            ) { append(text.substring(j, j + q.length)) }
+            i = j + q.length
+        }
+    }
 
 private data class SearchHit(
     val kind: String,
@@ -1139,7 +1527,7 @@ private fun ShelfSearch(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "会同时搜书名和正文，正文命中会列出章节和那一小段",
+                        "搜书名、章节名和正文；命中的词会标出来",
                         style = TextStyle(fontSize = 11.sp, color = InkGray.copy(alpha = 0.7f)),
                         textAlign = TextAlign.Center
                     )
@@ -1187,7 +1575,7 @@ private fun ShelfSearch(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    hit.bookTitle,
+                                    hl(hit.bookTitle, query, Color(0xFF9A4A2F)),
                                     style = TextStyle(
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.SemiBold,
@@ -1200,7 +1588,7 @@ private fun ShelfSearch(
                                 if (hit.chapterIndex > 0) {
                                     Spacer(Modifier.width(8.dp))
                                     Text(
-                                        hit.chapterTitle,
+                                        hl(hit.chapterTitle, query, Color(0xFF9A4A2F)),
                                         style = TextStyle(fontSize = 11.sp, color = InkGray),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
@@ -1211,7 +1599,7 @@ private fun ShelfSearch(
                             if (hit.snippet.isNotBlank()) {
                                 Spacer(Modifier.height(5.dp))
                                 Text(
-                                    hit.snippet,
+                                    hl(hit.snippet, query, Color(0xFF9A4A2F)),
                                     style = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = InkGray),
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
@@ -1237,12 +1625,24 @@ private fun searchAll(vm: AppViewModel, q: String): List<SearchHit> {
     val out = mutableListOf<SearchHit>()
     val needle = q.lowercase()
 
-    vm.data.projects.forEach { p ->
+    // 后台保存线程可能在改这些集合，先拷一份快照再遍历，避免 ConcurrentModificationException
+    val projects = vm.data.projects.toList()
+    val books = vm.data.importedBooks.toList()
+
+    projects.forEach { p ->
         if (p.title.lowercase().contains(needle)) {
             out.add(SearchHit("novel", p.id, p.title, 0, "", "书名匹配"))
         }
         p.chapters.forEach { ch ->
             if (out.size >= 80) return@forEach
+            val realTitle = ch.title.ifBlank { "第${ch.index}章" }
+            val titleHit = realTitle.lowercase().contains(needle)
+            if (titleHit) {
+                out.add(
+                    SearchHit("novel", p.id, p.title, ch.index, realTitle, "章节名匹配")
+                )
+                return@forEach
+            }
             if (ch.content.isBlank()) return@forEach
             val idx = ch.content.lowercase().indexOf(needle)
             if (idx >= 0) {
@@ -1252,7 +1652,7 @@ private fun searchAll(vm: AppViewModel, q: String): List<SearchHit> {
                         bookId = p.id,
                         bookTitle = p.title,
                         chapterIndex = ch.index,
-                        chapterTitle = "第${ch.index}章",
+                        chapterTitle = realTitle,
                         snippet = snippetOf(ch.content, idx, q.length)
                     )
                 )
@@ -1260,12 +1660,18 @@ private fun searchAll(vm: AppViewModel, q: String): List<SearchHit> {
         }
     }
 
-    vm.data.importedBooks.forEach { b ->
+    books.forEach { b ->
         if (b.title.lowercase().contains(needle)) {
             out.add(SearchHit("imported", b.id, b.title, 0, "", "书名匹配"))
         }
         b.chapters.forEach { ch ->
             if (out.size >= 80) return@forEach
+            if (ch.title.lowercase().contains(needle)) {
+                out.add(
+                    SearchHit("imported", b.id, b.title, ch.index, ch.title.take(24), "章节名匹配")
+                )
+                return@forEach
+            }
             if (ch.content.isBlank()) return@forEach
             val idx = ch.content.lowercase().indexOf(needle)
             if (idx >= 0) {

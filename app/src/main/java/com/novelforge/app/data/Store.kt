@@ -1,6 +1,7 @@
 package com.novelforge.app.data
 
 import android.content.Context
+import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -8,6 +9,19 @@ import java.io.File
 /** 极简本地存储：全部数据存成一份 JSON（filesDir/novel-forge-data.json）。
  *  v1 先不用 Room，够用且零迁移负担；数据量大了再换。 */
 class Store(context: Context) {
+
+    companion object {
+        @Volatile
+        private var inst: Store? = null
+
+        /** 整个进程共用一个实例：界面和下载服务写的是同一份内存数据 */
+        fun shared(context: Context): Store {
+            inst?.let { return it }
+            return synchronized(this) {
+                inst ?: Store(context.applicationContext).also { inst = it }
+            }
+        }
+    }
 
     private val file = File(context.filesDir, "novel-forge-data.json")
     private val json = Json {
@@ -29,9 +43,32 @@ class Store(context: Context) {
         }
     }
 
+    /** 写盘放到后台线程，界面点一下就卡的情况就不会有了 */
+    private val saveScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
+    private val saveJob = java.util.concurrent.atomic.AtomicReference<kotlinx.coroutines.Job?>(null)
+    private val pending = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 立刻落盘（导入、下载完这类不能丢的场合用） */
+    @Synchronized
+    fun saveNow() {
+        pending.set(false)
+        runCatching { file.writeText(json.encodeToString(data)) }
+    }
+
+    /** 合并写盘：短时间内多次改动只写一次，不阻塞 UI */
     fun save() {
-        data.projects.forEach { it.updatedAt = System.currentTimeMillis() }
-        file.writeText(json.encodeToString(data))
+        pending.set(true)
+        if (saveJob.get()?.isActive == true) return
+        val job = saveScope.launch {
+            kotlinx.coroutines.delay(260)
+            while (pending.getAndSet(false)) {
+                runCatching { file.writeText(json.encodeToString(data)) }
+                kotlinx.coroutines.delay(80)
+            }
+        }
+        saveJob.set(job)
     }
 
     // —— 供应商 ——

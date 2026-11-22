@@ -11,6 +11,7 @@ import com.novelforge.app.data.Chapter
 import com.novelforge.app.data.Exporter
 import com.novelforge.app.data.ImportedBook
 import com.novelforge.app.data.ImportedChapter
+import com.novelforge.app.data.ModelConfig
 import com.novelforge.app.data.NovelProject
 import com.novelforge.app.data.Pricing
 import com.novelforge.app.data.ProviderConfig
@@ -21,9 +22,13 @@ import com.novelforge.app.gen.Generator
 import com.novelforge.app.net.AiClient
 import com.novelforge.app.net.BalanceClient
 import com.novelforge.app.net.BalanceInfo
-import com.novelforge.app.net.Catalog
-import com.novelforge.app.net.NovelCrawler
-import com.novelforge.app.net.SearchCandidate
+import com.novelforge.app.net.BookHit
+import com.novelforge.app.net.DownloadHub
+import com.novelforge.app.net.DownloadService
+import com.novelforge.app.net.Novels
+import com.novelforge.app.net.SourceBook
+import com.novelforge.app.net.UpdateClient
+import com.novelforge.app.net.UpdateEntry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -35,10 +40,11 @@ data class BalanceUi(val loading: Boolean = false, val info: BalanceInfo? = null
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val store = Store(app)
+    private val store = Store.shared(app)
 
     /** 数据快照：每次写操作后刷新，驱动 UI 重组 */
-    var data by mutableStateOf(store.data)
+    // 用 neverEqualPolicy：数据是原地改的，默认的结构相等会让重组失效
+    var data by mutableStateOf(store.data, androidx.compose.runtime.neverEqualPolicy())
         private set
 
     // —— 生成状态 ——
@@ -67,9 +73,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     // —— 导入状态 ——
-    var importCandidates by mutableStateOf<List<SearchCandidate>>(emptyList())
+    var importHits by mutableStateOf<List<BookHit>>(emptyList())
         private set
-    var importCatalog by mutableStateOf<Catalog?>(null)
+    var importCatalog by mutableStateOf<SourceBook?>(null)
         private set
     var importStatus by mutableStateOf("")
         private set
@@ -121,6 +127,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteProvider(id: String) {
         store.deleteProvider(id)
         refresh()
+    }
+
+    /** 供应商相关的小改动只动这个计数器，避免整个 data 重组拖慢开关 */
+    var providerRevision by mutableStateOf(0)
+        private set
+
+    private fun bumpProviderRevision() {
+        providerRevision++
+    }
+
+    /** 开关一个供应商（关掉的不出现在写作切换里） */
+    fun setProviderEnabled(id: String, enabled: Boolean) {
+        val i = store.data.providers.indexOfFirst { it.id == id }
+        if (i < 0) return
+        // 只动这一套的总开关，模型各自的状态原样保留
+        store.data.providers[i] = store.data.providers[i].copy(enabled = enabled)
+        store.save()
+        bumpProviderRevision()
+    }
+
+    /** 开关某个供应商里的一个模型 */
+    fun setModelEnabled(providerId: String, modelName: String, enabled: Boolean) {
+        val i = store.data.providers.indexOfFirst { it.id == providerId }
+        if (i < 0) return
+        val p = store.data.providers[i]
+        val cfgs = p.modelConfigs.toMutableList()
+        val j = cfgs.indexOfFirst { it.name == modelName }
+        if (j >= 0) cfgs[j] = cfgs[j].copy(enabled = enabled)
+        else cfgs.add(ModelConfig(name = modelName, enabled = enabled))
+        store.data.providers[i] = p.copy(modelConfigs = cfgs)
+        store.save()
+        bumpProviderRevision()
+    }
+
+    /** 模型是否启用（没配置过就是启用） */
+    fun isModelEnabled(providerId: String, modelName: String): Boolean {
+        val p = store.data.providers.firstOrNull { it.id == providerId } ?: return true
+        return p.modelConfigs.firstOrNull { it.name == modelName }?.enabled ?: true
     }
 
     fun setActiveProvider(id: String) {
@@ -439,18 +483,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         genJob?.cancel()
     }
 
-    // —— 爬取导入 ——
+    // —— 在线书库 ——
 
-    fun searchNovel(name: String) {
-        if (name.isBlank()) return
+    /** 搜书名，所有书源并发 */
+    fun searchOnline(keyword: String) {
+        val q = keyword.trim()
+        if (q.isBlank()) return
         importBusy = true
-        importStatus = "正在按书名搜索候选站点…"
+        importStatus = "正在搜索《$q》…"
         importCatalog = null
+        importHits = emptyList()
         viewModelScope.launch {
-            NovelCrawler.searchByName(name.trim()).fold(
-                onSuccess = {
-                    importCandidates = it
-                    importStatus = "找到 ${it.size} 个候选，点一个解析它的目录"
+            runCatching { Novels.searchAll(q) }.fold(
+                onSuccess = { out ->
+                    importHits = out.hits
+                    importStatus = buildString {
+                        append("找到 ${out.hits.size} 本")
+                        val bySource = out.hits.groupBy { h -> h.sourceName }
+                        if (bySource.size > 1) {
+                            append("（")
+                            append(bySource.entries.joinToString("、") { e -> "${e.key} ${e.value.size}" })
+                            append("）")
+                        }
+                        if (out.errors.isNotEmpty()) append(" · ${out.errors.joinToString("、")}")
+                    }
                 },
                 onFailure = { importStatus = "❌ ${it.message}" }
             )
@@ -458,13 +514,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 点一本书，拉目录 */
+    fun openOnlineBook(hit: BookHit) {
+        importBusy = true
+        importStatus = "正在读取《${hit.title}》的目录…"
+        importCatalog = null
+        viewModelScope.launch {
+            runCatching { Novels.sourceOf(hit.sourceId).catalog(hit) }.fold(
+                onSuccess = { book ->
+                    importCatalog = book
+                    importStatus = "《${book.title}》共 ${book.chapters.size} 章 · ${book.sourceName}"
+                },
+                onFailure = { importStatus = "❌ 目录读取失败：${it.message}" }
+            )
+            importBusy = false
+        }
+    }
+
+    /** 直接粘目录页地址 */
     fun parseCatalog(url: String) {
         val target = url.trim()
-        if (target.isBlank()) return
+        if (!target.startsWith("http")) return
         importBusy = true
-        importStatus = "正在解析目录页…"
+        importStatus = "正在解析这个地址…"
+        importCatalog = null
+        importHits = emptyList()
         viewModelScope.launch {
-            NovelCrawler.fetchCatalog(target).fold(
+            runCatching { Novels.catalog(target) }.fold(
                 onSuccess = {
                     importCatalog = it
                     importStatus = "解析成功：《${it.title}》共 ${it.chapters.size} 章"
@@ -475,62 +551,78 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 开始整本下载：逐章抓取，每 25 章落盘一次，中途取消已下部分保留。 */
-    fun startImportDownload(onDone: (String) -> Unit) {
+    /** 整本下载：交给前台服务去跑，切走/息屏都继续 */
+    fun startDownload(onDone: (String) -> Unit) {
         val catalog = importCatalog ?: return
-        importBusy = true
+        if (catalog.chapters.isEmpty()) return
+
+        // 同一本书已经在下载就不重复开
+        if (DownloadHub.state?.running == true) {
+            importStatus = "已经有一本在下，先等它下完或者点停止"
+            return
+        }
+
+        val ctx = getApplication<Application>()
         val book = ImportedBook(
-            title = catalog.title,
+            title = catalog.title.ifBlank { "未命名" },
             author = catalog.author,
-            sourceUrl = catalog.sourceUrl
+            sourceUrl = catalog.sourceUrl,
+            origin = "crawl",
+            sourceId = catalog.sourceId,
+            pendingChapters = catalog.chapters.map {
+                com.novelforge.app.data.PendingChapter(it.title, it.url)
+            }
         )
         store.data.importedBooks.add(book)
         store.save()
         refresh()
-        importJob = viewModelScope.launch {
-            var failures = 0
-            val total = minOf(catalog.chapters.size, 3000)
-            try {
-                for (i in 0 until total) {
-                    val link = catalog.chapters[i]
-                    importStatus = "正在下载 ${i + 1}/$total：${link.title}"
-                    var text = NovelCrawler.fetchChapterText(link.url).getOrElse { "" }
-                    // 失败或明显太短，再试一次
-                    if (text.length < 80) {
-                        kotlinx.coroutines.delay(500)
-                        val retry = NovelCrawler.fetchChapterText(link.url).getOrElse { "" }
-                        if (retry.length > text.length) text = retry
-                    }
-                    if (text.isBlank()) {
-                        failures++
-                        text = "（本章下载失败，可稍后重试）"
-                    }
-                    book.chapters.add(ImportedChapter(i + 1, link.title, text))
-                    if (book.chapters.size % 25 == 0) {
-                        store.save()
-                        refresh()
-                    }
-                    delay(200)   // 对站点客气一点，别把人家打挂
-                }
-                importStatus = "下载完成：${book.chapters.size} 章" +
-                    if (failures > 0) "（$failures 章失败）" else ""
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) {
-                    importStatus = "已停止，已下载的 ${book.chapters.size} 章保留在书架"
-                } else {
-                    importStatus = "❌ 下载中断：${e.message}（已下载部分已保留）"
-                }
-            } finally {
-                store.save()
-                refresh()
-                importBusy = false
-                onDone(book.id)
-            }
-        }
+
+        DownloadService.start(ctx, book.id)
+        importStatus = "已在后台开始下载，可以退出这个页面"
+        onDone(book.id)
     }
 
+    /** 接着下：地址表是当初存下来的，还是同一个源、同一批地址 */
+    fun resumeDownload(bookId: String) {
+        val book = store.data.importedBooks.firstOrNull { it.id == bookId } ?: return
+        if (book.pendingChapters.isEmpty()) return
+        if (DownloadHub.state?.running == true) return
+        DownloadService.start(getApplication(), bookId)
+        importStatus = "继续下载《${book.title}》"
+    }
+
+    /** 未下完的书（有地址表但还没抓完） */
+    fun unfinishedBooks(): List<ImportedBook> =
+        store.data.importedBooks.filter { it.pendingChapters.size > it.chapters.size }
+
+    fun removeImportedBook(id: String) {
+        store.data.importedBooks.removeAll { it.id == id }
+        store.save()
+        refresh()
+    }
+
+    /** 服务在另一个地方写数据，界面要跟上 */
+    fun syncFromStore() {
+        data = store.data
+    }
+
+    /** 主动停止（只有这一个入口会停） */
     fun cancelImport() {
-        importJob?.cancel()
+        DownloadService.stop(getApplication())
+    }
+
+    /** 界面用：当前下载进度 */
+    fun downloadState() = DownloadHub.state
+
+    fun clearDownloadBanner() {
+        val st = DownloadHub.state ?: return
+        if (!st.running) DownloadHub.state = null
+    }
+
+    fun clearOnlineSearch() {
+        importHits = emptyList()
+        importCatalog = null
+        importStatus = ""
     }
 
     /** 导入本地 txt / md 文件 */
@@ -569,6 +661,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         data = store.data
     }
 
+    /** 书架编辑：改名 / 改作者，作品和导入的书都支持 */
+    fun updateBookTitle(kind: String, id: String, title: String) {
+        val name = title.trim().ifBlank { "未命名" }
+        if (kind == "novel") {
+            store.data.projects.firstOrNull { it.id == id }?.let {
+                it.title = name
+                store.save()
+                refresh()
+            }
+        } else {
+            store.data.importedBooks.firstOrNull { it.id == id }?.let {
+                it.title = name
+                store.save()
+                refresh()
+            }
+        }
+    }
+
+    fun updateBookAuthor(kind: String, id: String, author: String) {
+        val a = author.trim()
+        if (kind == "novel") {
+            store.data.projects.firstOrNull { it.id == id }?.let {
+                it.protagonist = a
+                store.save()
+                refresh()
+            }
+        } else {
+            store.data.importedBooks.firstOrNull { it.id == id }?.let {
+                it.author = a
+                store.save()
+                refresh()
+            }
+        }
+    }
+
     fun importedBook(id: String): ImportedBook? = store.data.importedBooks.firstOrNull { it.id == id }
 
     fun deleteImportedBook(id: String) {
@@ -581,5 +708,103 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val book = importedBook(bookId) ?: return null
         if (book.chapters.isEmpty()) return null
         return Exporter.writeImported(getApplication(), book, format)
+    }
+
+    // —— 更新 ——
+
+    var updateChecking by mutableStateOf(false)
+        private set
+    var updateEntries by mutableStateOf<List<UpdateEntry>>(emptyList())
+        private set
+    var updateStatus by mutableStateOf("")
+        private set
+    var updateDownloading by mutableStateOf(false)
+        private set
+    var updateProgress by mutableStateOf(0f)
+        private set
+
+    fun currentVersion(): Pair<String, Int> = UpdateClient.installedVersion(getApplication())
+
+    fun setUpdateServer(url: String) {
+        store.data.settings.updateServerUrl = url.trim()
+        store.save()
+        data = store.data
+    }
+
+    /** 检查更新：拉 manifest，顺手把记录存进设置（只留 10 条） */
+    fun checkUpdates() {
+        val url = store.data.settings.updateServerUrl.ifBlank { "http://127.0.0.1:8787" }
+        updateChecking = true
+        updateStatus = "正在连 ${url} …"
+        viewModelScope.launch {
+            runCatching { UpdateClient.fetch(url) }.fold(
+                onSuccess = { list ->
+                    updateEntries = list
+                    val (name, code) = currentVersion()
+                    val latest = list.firstOrNull()
+                    store.data.settings.updateHistory = list.take(10).map { e ->
+                        com.novelforge.app.data.UpdateRecord(
+                            versionName = e.versionName,
+                            versionCode = e.versionCode,
+                            time = e.time,
+                            notes = e.notes,
+                            installed = e.versionCode <= code
+                        )
+                    }
+                    store.save()
+                    data = store.data
+                    updateStatus = when {
+                        latest == null -> "服务器上还没有版本"
+                        latest.versionCode > code -> "有新版本 ${latest.versionName}（当前 $name）"
+                        else -> "已经是最新的 $name"
+                    }
+                },
+                onFailure = { updateStatus = "❌ ${it.message}" }
+            )
+            updateChecking = false
+        }
+    }
+
+    fun scanForUpdateServer() {
+        updateChecking = true
+        updateStatus = "正在扫局域网… 最多十几秒"
+        viewModelScope.launch {
+            val found = runCatching { UpdateClient.scanLan() }.getOrNull()
+            if (found != null) {
+                setUpdateServer(found)
+                updateStatus = "找到 $found"
+                updateChecking = false
+                checkUpdates()
+            } else {
+                updateChecking = false
+                updateStatus = "没找到。确认手机和电脑同一个 WiFi，电脑上的更新服务开着"
+            }
+        }
+    }
+
+    /** 下载并交给系统安装 */
+    fun installUpdate(entry: UpdateEntry) {
+        val ctx = getApplication<Application>()
+        val url = store.data.settings.updateServerUrl
+        if (!UpdateClient.canInstall(ctx)) {
+            updateStatus = "先去允许「安装未知应用」，再回来点一次"
+            UpdateClient.askInstallPermission(ctx)
+            return
+        }
+        updateDownloading = true
+        updateProgress = 0f
+        updateStatus = "正在下载 ${entry.versionName}…"
+        viewModelScope.launch {
+            runCatching {
+                UpdateClient.download(url, entry, ctx) { p -> updateProgress = p }
+            }.fold(
+                onSuccess = { file ->
+                    updateStatus = "下载好了，接着点「安装」"
+                    UpdateClient.install(ctx, file)
+                },
+                onFailure = { updateStatus = "❌ ${it.message}" }
+            )
+            updateDownloading = false
+        }
     }
 }

@@ -23,6 +23,9 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -44,12 +47,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.ui.draw.scale
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -62,6 +67,7 @@ import androidx.core.content.FileProvider
 import com.novelforge.app.data.AppSettings
 import com.novelforge.app.data.Chapter
 import com.novelforge.app.data.Exporter
+import com.novelforge.app.data.WordCount
 import com.novelforge.app.data.MemoryCharacter
 import com.novelforge.app.data.ModelConfig
 import com.novelforge.app.data.NovelProject
@@ -102,6 +108,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
@@ -111,6 +118,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.unit.IntOffset
@@ -123,7 +135,7 @@ import androidx.compose.material.icons.filled.MenuBook
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun BackBar(title: String, onBack: (() -> Unit)? = null, actions: @Composable () -> Unit = {}) {
+internal fun BackBar(title: String, onBack: (() -> Unit)? = null, actions: @Composable () -> Unit = {}) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -185,29 +197,30 @@ private fun shareFile(context: Context, file: File) {
 private fun fmtTime(ms: Long): String = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(ms))
 
 // ============================== 首页：作品 + 导入书架（带搜索） ==============================
+// ============================== 写作：自己的作品 ==============================
+
+private fun ago(ms: Long): String {
+    if (ms <= 0L) return "还没动过"
+    val diff = System.currentTimeMillis() - ms
+    val min = diff / 60000
+    return when {
+        min < 1 -> "刚刚"
+        min < 60 -> "${min} 分钟前"
+        min < 60 * 24 -> "${min / 60} 小时前"
+        min < 60 * 24 * 30 -> "${min / 60 / 24} 天前"
+        else -> "${min / 60 / 24 / 30} 个月前"
+    }
+}
 
 @Composable
 fun HomeScreen(
     vm: AppViewModel,
     onCreate: () -> Unit,
-    onOpenShelf: () -> Unit,
-    onOpenProviders: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onOpenStats: () -> Unit,
-    onOpenImport: () -> Unit,
-    onOpenProject: (String) -> Unit,
-    onOpenImportedBook: (String) -> Unit
+    onOpenProject: (String) -> Unit
 ) {
-    var query by rememberSaveable { mutableStateOf("") }
-    val allProjects = vm.data.projects
-    val allImported = vm.data.importedBooks
-    val projects = allProjects
-        .filter { query.isBlank() || it.title.contains(query, ignoreCase = true) || it.genre.contains(query) }
-        .sortedByDescending { it.updatedAt }
-    val imported = allImported
-        .filter { query.isBlank() || it.title.contains(query, ignoreCase = true) }
-    val latest = allProjects.maxByOrNull { it.updatedAt }
-    val totalWords = allProjects.sumOf { it.totalWords }
+    val projects = vm.data.projects.sortedByDescending { it.updatedAt }
+    val totalWords = projects.sumOf { it.totalWords }
+    val generatingId = vm.generatingProjectId
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -216,393 +229,174 @@ fun HomeScreen(
                 Modifier
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .padding(start = 22.dp, end = 12.dp, top = 18.dp, bottom = 6.dp),
+                    .padding(start = 22.dp, end = 16.dp, top = 18.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "小说工坊",
+                        "写作",
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = (-0.5).sp
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        if (allProjects.isEmpty()) "从第一章开始"
-                        else "${allProjects.size} 部作品 · 共 $totalWords 字",
+                        if (projects.isEmpty()) "还没有作品，从第一章开始"
+                        else "${projects.size} 部作品 · 共 ${WordCount.label(totalWords)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                val shelfSrc = remember { MutableInteractionSource() }
+                val src = remember { MutableInteractionSource() }
                 Box(
                     Modifier
                         .size(38.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f))
-                        .pressScale(shelfSrc, 0.9f)
-                        .clickable(interactionSource = shelfSrc, indication = null, onClick = onOpenShelf),
+                        .pressScale(src, 0.9f)
+                        .clickable(interactionSource = src, indication = null, onClick = onCreate),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        Icons.Default.MenuBook,
-                        contentDescription = "书架",
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                var menuOpen by remember { mutableStateOf(false) }
-                Box {
-                    val src = remember { MutableInteractionSource() }
-                    Box(
-                        Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f))
-                            .pressScale(src, 0.9f)
-                            .clickable(interactionSource = src, indication = null) { menuOpen = true },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.MoreVert,
-                            contentDescription = "更多",
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("书架") },
-                            onClick = { menuOpen = false; onOpenShelf() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("从网上导入小说") },
-                            onClick = { menuOpen = false; onOpenImport() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("用量统计") },
-                            onClick = { menuOpen = false; onOpenStats() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("模型设置") },
-                            onClick = { menuOpen = false; onOpenProviders() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("全局设置") },
-                            onClick = { menuOpen = false; onOpenSettings() }
-                        )
-                    }
-                }
-            }
-        },
-        floatingActionButton = {
-            val src = remember { MutableInteractionSource() }
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(MaterialTheme.colorScheme.primary)
-                    .pressScale(src, 0.94f)
-                    .clickable(interactionSource = src, indication = null, onClick = onCreate)
-                    .padding(horizontal = 20.dp, vertical = 14.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(19.dp),
-                        tint = MaterialTheme.colorScheme.onPrimary
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "写新的",
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Icon(Icons.Default.Add, "新建作品", Modifier.size(20.dp))
                 }
             }
         }
     ) { pad ->
+        if (projects.isEmpty()) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(pad)
+                    .padding(horizontal = 28.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "写一部自己的书",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "给个名字和题材，剩下的交给模型一章一章写。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                Spacer(Modifier.height(18.dp))
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(MaterialTheme.colorScheme.primary)
+                        .clickable(onClick = onCreate)
+                        .padding(horizontal = 26.dp, vertical = 14.dp)
+                ) {
+                    Text(
+                        "开始创作",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
+            return@Scaffold
+        }
+
         LazyColumn(
             Modifier.padding(pad).padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)
         ) {
-            if (latest != null) {
-                item {
-                    val total = latest.chapters.size.coerceAtLeast(latest.chapterCount).coerceAtLeast(1)
-                    val done = latest.finishedChapters
-                    val frac = (done.toFloat() / total).coerceIn(0f, 1f)
-                    val animatedFrac by animateFloatAsState(
-                        targetValue = frac,
-                        animationSpec = tween(900, easing = FastOutSlowInEasing),
-                        label = "ring"
-                    )
-                    val src = remember { MutableInteractionSource() }
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .staggerEnter(0)
-                            .clip(RoundedCornerShape(28.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(
-                                        MaterialTheme.colorScheme.primaryContainer,
-                                        Color(0xFFD6E4F5)
-                                    )
-                                )
-                            )
-                            .pressScale(src, 0.98f)
-                            .clickable(
-                                interactionSource = src,
-                                indication = null,
-                                onClick = { onOpenProject(latest.id) }
-                            )
-                            .padding(20.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    "接着写",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Text(
-                                    latest.title,
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(Modifier.height(10.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        if (done >= total) "已完结 · 点开看看" else "第 ${done + 1} 章待写",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f)
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Icon(
-                                        Icons.Default.KeyboardArrowRight,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp),
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f)
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(14.dp))
-                            val ringColor = MaterialTheme.colorScheme.primary
-                            Box(contentAlignment = Alignment.Center) {
-                                Canvas(Modifier.size(58.dp)) {
-                                    val stroke = 5.dp.toPx()
-                                    drawArc(
-                                        color = ringColor.copy(alpha = 0.18f),
-                                        startAngle = -90f,
-                                        sweepAngle = 360f,
-                                        useCenter = false,
-                                        style = Stroke(stroke, cap = StrokeCap.Round)
-                                    )
-                                    drawArc(
-                                        color = ringColor,
-                                        startAngle = -90f,
-                                        sweepAngle = 360f * animatedFrac,
-                                        useCenter = false,
-                                        style = Stroke(stroke, cap = StrokeCap.Round)
-                                    )
-                                }
-                                Text(
-                                    "${(frac * 100).toInt()}%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-                }
-            } else {
-                item {
-                    val src = remember { MutableInteractionSource() }
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .staggerEnter(0)
-                            .clip(RoundedCornerShape(28.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(28.dp))
-                            .pressScale(src, 0.98f)
-                            .clickable(interactionSource = src, indication = null, onClick = onCreate)
-                            .padding(22.dp)
-                    ) {
-                        Column {
+            itemsIndexed(projects, key = { _, p -> p.id }) { index, p ->
+                val total = p.chapters.size.coerceAtLeast(p.chapterCount).coerceAtLeast(1)
+                val done = p.finishedChapters.coerceIn(0, total)
+                val frac = (done.toFloat() / total).coerceIn(0f, 1f)
+                val isGenerating = generatingId == p.id
+                val src = remember(p.id) { MutableInteractionSource() }
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .staggerEnter(index)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .pressScale(src, 0.985f)
+                        .clickable(interactionSource = src, indication = null) { onOpenProject(p.id) }
+                        .padding(18.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            p.title.ifBlank { "未命名" },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (isGenerating) {
                             Text(
-                                "写第一本",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold
+                                "正在写",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
                             )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                "先配一个模型供应商，再说题材和主角，剩下的交给它一章一章写",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(14.dp))
-                            Text(
-                                "还没有配置模型？去「模型设置」",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.clickable { onOpenProviders() }
+                        } else {
+                            Icon(
+                                Icons.Default.KeyboardArrowRight,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.outline
                             )
                         }
                     }
-                }
-            }
-
-            if (allProjects.size + allImported.size > 3) {
-                item {
-                    AppTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        label = { Text("搜索书名 / 题材") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-
-            if (projects.isNotEmpty()) {
-                item {
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        "我的作品",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 10.dp, start = 2.dp)
+                        listOfNotNull(
+                            p.genre.takeIf { it.isNotBlank() },
+                            "${p.chapters.size} 章",
+                            WordCount.label(p.totalWords)
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
-                itemsIndexed(projects, key = { _, p -> "p" + p.id }) { i, p ->
-                    val total = p.chapters.size.coerceAtLeast(p.chapterCount).coerceAtLeast(1)
-                    val done = p.finishedChapters
-                    val progress by animateFloatAsState(
-                        targetValue = done.toFloat() / total,
-                        animationSpec = tween(700, easing = FastOutSlowInEasing),
-                        label = "chapterProgress"
-                    )
-                    val src = remember { MutableInteractionSource() }
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .staggerEnter(i + 1)
-                            .animateItem()
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                            .pressScale(src, 0.98f)
-                            .clickable(
-                                interactionSource = src,
-                                indication = null,
-                                onClick = { onOpenProject(p.id) }
-                            )
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                p.title,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.height(3.dp))
-                            Text(
-                                "${p.genre} · 约 ${p.totalWords} 字 · $done/$total 章",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(14.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(5.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
                             Box(
                                 Modifier
-                                    .fillMaxWidth()
-                                    .height(4.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                            ) {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth(progress.coerceIn(0f, 1f))
-                                        .height(4.dp)
-                                        .clip(RoundedCornerShape(2.dp))
-                                        .background(MaterialTheme.colorScheme.primary)
-                                )
-                            }
+                                    .fillMaxWidth(frac)
+                                    .height(5.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(MaterialTheme.colorScheme.primary)
+                            )
                         }
-                        Spacer(Modifier.width(12.dp))
-                        Icon(
-                            Icons.Default.KeyboardArrowRight,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.outline
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "$done / $total",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                }
-            }
-
-            if (imported.isNotEmpty()) {
-                item {
+                    Spacer(Modifier.height(10.dp))
                     Text(
-                        "书架",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 10.dp, start = 2.dp)
+                        when {
+                            isGenerating -> "模型正在写这一章…"
+                            done == 0 -> "还没开始 · 点进来一键生成"
+                            done >= total -> "写完了 · 上次 ${ago(p.updatedAt)}"
+                            else -> "下次写第 ${done + 1} 章 · 上次 ${ago(p.updatedAt)}"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
                     )
                 }
-                itemsIndexed(imported, key = { _, b -> "i" + b.id }) { i, b ->
-                    val src = remember { MutableInteractionSource() }
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .staggerEnter(i + 1)
-                            .animateItem()
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                            .pressScale(src, 0.98f)
-                            .clickable(
-                                interactionSource = src,
-                                indication = null,
-                                onClick = { onOpenImportedBook(b.id) }
-                            )
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                b.title,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "${b.author.ifBlank { "佚名" }} · ${b.chapters.size} 章 · 约 ${b.totalWords} 字",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Icon(
-                            Icons.Default.KeyboardArrowRight,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.outline
-                        )
-                    }
-                }
             }
-
-            item { Spacer(Modifier.height(96.dp)) }
         }
     }
 }
-
 // ============================== 新建作品 ==============================
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -753,7 +547,7 @@ fun CreateScreen(
                     Text("每章字数", style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.weight(1f))
                     Text(
-                        "约 ${words.toInt()} 字",
+                        "约 ${WordCount.label(words.toInt())}",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -762,7 +556,7 @@ fun CreateScreen(
                 Slider(words, { words = it }, valueRange = 800f..5000f, steps = 41)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "预计全书约 ${(chapterCount.toInt() * words.toInt()) / 10000.0} 万字",
+                    "预计全书约 ${WordCount.wan(chapterCount.toInt() * words.toInt() / 10000.0)}字",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -847,6 +641,18 @@ fun ProvidersScreen(
             }
         }
     ) { pad ->
+        var expandedProvider by remember { mutableStateOf<String?>(null) }
+        // 界面本地镜像：点开关先改这里，立刻跟手；后台再落盘
+        var localEnabled by remember {
+            mutableStateOf(vm.data.providers.associate { it.id to it.enabled })
+        }
+        var localModels by remember {
+            mutableStateOf(
+                vm.data.providers.associate { p ->
+                    p.id to p.models.associateWith { m -> vm.isModelEnabled(p.id, m) }
+                }
+            )
+        }
         val providers = vm.data.providers
         if (providers.isEmpty()) {
             Column(
@@ -869,35 +675,57 @@ fun ProvidersScreen(
         ) {
             item {
                 Text(
-                    "正在用的那套会标出来。写作时可以随时在工作台里换，不用回这里。",
+                    "开关控制这套配置要不要出现在写作的切换列表里；点卡片展开，能单独关掉里面的模型。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 4.dp)
                 )
             }
             itemsIndexed(providers, key = { _, p -> p.id }) { i, prov ->
-                val active = vm.data.activeProviderId == prov.id
+                val on = localEnabled[prov.id] ?: prov.enabled
                 val src = remember { MutableInteractionSource() }
-                Row(
+                val expanded = expandedProvider == prov.id
+                val borderColor by animateColorAsState(
+                    targetValue = if (on) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0f),
+                    animationSpec = tween(240),
+                    label = "provBorder"
+                )
+                val fill by animateColorAsState(
+                    targetValue = if (on) MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
+                    else MaterialTheme.colorScheme.surface,
+                    animationSpec = tween(240),
+                    label = "provFill"
+                )
+                val contentAlpha by animateFloatAsState(
+                    targetValue = if (on) 1f else 0.45f,
+                    animationSpec = tween(240),
+                    label = "provAlpha"
+                )
+
+                Column(
                     Modifier
                         .fillMaxWidth()
-                        .staggerEnter(i)
                         .animateItem()
                         .clip(RoundedCornerShape(22.dp))
-                        .background(MaterialTheme.colorScheme.surface)
-                        .border(
-                            1.5.dp,
-                            if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0f),
-                            RoundedCornerShape(22.dp)
-                        )
-                        .pressScale(src, 0.98f)
-                        .clickable(interactionSource = src, indication = null) { onEdit(prov.id) }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .background(fill)
+                        .border(1.5.dp, borderColor, RoundedCornerShape(22.dp))
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .pressScale(src, 0.985f)
+                            .clickable(interactionSource = src, indication = null) {
+                                expandedProvider = if (expanded) null else prov.id
+                            }
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .graphicsLayer { alpha = contentAlpha }
+                        ) {
                             Text(
                                 prov.name,
                                 style = MaterialTheme.typography.titleSmall,
@@ -905,57 +733,174 @@ fun ProvidersScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (active) {
-                                Spacer(Modifier.width(8.dp))
-                                Box(
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                prov.baseUrl.ifBlank { "还没填地址" },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                buildString {
+                                    append("${prov.models.size} 个模型")
+                                    if (prov.model.isNotBlank()) append(" · 默认 ${prov.model}")
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(
+                            checked = on,
+                            onCheckedChange = { v ->
+                                Haptics.tap(vm.getApplication())
+                                localEnabled = localEnabled + (prov.id to v)
+                                vm.setProviderEnabled(prov.id, v)
+                            },
+                            modifier = Modifier.scale(0.85f)
+                        )
+                        Spacer(Modifier.width(2.dp))
+                        val editSrc = remember(prov.id) { MutableInteractionSource() }
+                        Box(
+                            Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+                                .pressScale(editSrc, 0.9f)
+                                .clickable(interactionSource = editSrc, indication = null) {
+                                    onEdit(prov.id)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = "编辑",
+                                modifier = Modifier.size(15.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    AnimatedVisibility(visible = expanded) {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+                        ) {
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)))
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                if (on) "这些模型会出现在写作的切换列表里"
+                                else "这套配置已关闭，模型开关暂时不可用",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            val models = prov.models.ifEmpty {
+                                listOfNotNull(prov.model.takeIf { it.isNotBlank() })
+                            }
+                            if (models.isEmpty()) {
+                                Text(
+                                    "还没拉取模型，点铅笔进去加",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            models.forEach { m ->
+                                val enabled = localModels[prov.id]?.get(m)
+                                    ?: vm.isModelEnabled(prov.id, m)
+                                // 整套关掉时，里面的开关直接禁用
+                                val rowAlpha by animateFloatAsState(
+                                    targetValue = if (on) 1f else 0.35f,
+                                    animationSpec = tween(200),
+                                    label = "modelRowAlpha"
+                                )
+                                Row(
                                     Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(MaterialTheme.colorScheme.primaryContainer)
-                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                        .fillMaxWidth()
+                                        .graphicsLayer { alpha = rowAlpha }
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        "使用中",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                        m,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clickable(enabled = on) {
+                                                Haptics.select(vm.getApplication())
+                                                localModels = localModels.toMutableMap().apply {
+                                                    this[prov.id] = (this[prov.id] ?: emptyMap()) + (m to !enabled)
+                                                }
+                                                vm.setModelEnabled(prov.id, m, !enabled)
+                                            }
+                                    )
+                                    Switch(
+                                        checked = enabled,
+                                        enabled = on,
+                                        onCheckedChange = { v ->
+                                            Haptics.select(vm.getApplication())
+                                            localModels = localModels.toMutableMap().apply {
+                                                this[prov.id] = (this[prov.id] ?: emptyMap()) + (m to v)
+                                            }
+                                            vm.setModelEnabled(prov.id, m, v)
+                                        },
+                                        modifier = Modifier.scale(0.7f)
                                     )
                                 }
                             }
                         }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            prov.baseUrl.ifBlank { "还没填地址" },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            buildString {
-                                append("${prov.models.size} 个模型")
-                                if (prov.model.isNotBlank()) append(" · 默认 ${prov.model}")
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    if (!active) {
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "设为默认",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { vm.setActiveProvider(prov.id) }
-                                .padding(horizontal = 8.dp, vertical = 6.dp)
-                        )
                     }
                 }
             }
             item { Spacer(Modifier.height(96.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun FormSection(index: String, title: String, hint: String = "") {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                index,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        if (hint.isNotBlank()) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                hint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -1000,6 +945,7 @@ fun ProviderEditScreen(
         )
     }
     var expandedModel by remember { mutableStateOf<String?>(null) }
+    var showRestModels by remember { mutableStateOf(false) }
     var compactAt by remember { mutableFloatStateOf(existing?.autoCompactAt ?: 0.8f) }
 
     fun build(): ProviderConfig = (existing ?: ProviderConfig()).copy(
@@ -1031,6 +977,20 @@ fun ProviderEditScreen(
         picking = false
     }
 
+    // 进来就把这个服务商的模型列出来，不用手点
+    LaunchedEffect(existing?.id) {
+        if (existing != null && existing.baseUrl.isNotBlank()) {
+            vm.fetchModels(existing)
+        }
+    }
+
+    // 拉到的列表里没有当前默认模型时，自动指到第一个
+    LaunchedEffect(vm.fetchedModels) {
+        if (vm.fetchedModels.isNotEmpty() && model !in vm.fetchedModels) {
+            model = vm.fetchedModels.first()
+        }
+    }
+
     Scaffold(topBar = {
         BackBar(
             if (existing == null) "添加服务商" else "编辑服务商",
@@ -1048,6 +1008,7 @@ fun ProviderEditScreen(
             Modifier.padding(pad).padding(horizontal = 16.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            FormSection("1", "选服务商", "预置一键填好，也可以自己填")
             if (picking) {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -1148,6 +1109,7 @@ fun ProviderEditScreen(
                     }
                 }
 
+                FormSection("2", "接入信息", "地址填到 /v1 这一层")
                 AppTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -1161,6 +1123,7 @@ fun ProviderEditScreen(
                     label = { Text("接口地址（到 /v1 这一层）") },
                     placeholder = { Text("https://api.deepseek.com/v1") },
                     singleLine = true,
+                    secret = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 AppTextField(
@@ -1168,9 +1131,11 @@ fun ProviderEditScreen(
                     onValueChange = { apiKey = it },
                     label = { Text("API Key") },
                     singleLine = true,
+                    secret = true,
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                FormSection("3", "模型", "拉取后勾选要用的")
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AppTextField(
                         value = model,
@@ -1185,94 +1150,144 @@ fun ProviderEditScreen(
                     ) { Text(if (vm.fetchingModels) "拉取中" else "拉取模型") }
                 }
 
-                if (vm.fetchedModels.isNotEmpty()) {
-                    val grouped = vm.fetchedModels
-                        .groupBy { it.substringBefore("/") }
-                        .toList()
-                        .sortedBy { it.first }
+                if (vm.fetchingModels && vm.fetchedModels.isEmpty()) {
                     Text(
-                        "共 ${vm.fetchedModels.size} 个模型 · ${grouped.size} 个来源 · 已选 ${selectedModels.size} 个",
+                        "正在读取这个服务商的模型列表…",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    grouped.forEach { (group, list) ->
-                        val open = group in expandedGroups
-                        val pickedInGroup = list.count { it in selectedModels }
+                }
+
+                if (vm.fetchedModels.isNotEmpty()) {
+                    val enabledModels = vm.fetchedModels.filter { it in selectedModels }
+                    val restModels = vm.fetchedModels.filter { it !in selectedModels }
+
+                    Text(
+                        "共 ${vm.fetchedModels.size} 个 · 已启用 ${enabledModels.size} 个",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    // 已启用的直接列出来
+                    enabledModels.forEach { m ->
+                        val cfg = modelConfigs.firstOrNull { it.name == m } ?: ModelConfig(name = m)
                         Card(
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                expandedGroups = if (open) expandedGroups - group else expandedGroups + group
-                            },
+                            modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant
                             ),
                             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
                         ) {
-                            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                            Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                                 Row(
                                     Modifier.fillMaxWidth(),
                                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                                 ) {
-                                    Text(group, fontWeight = FontWeight.SemiBold)
-                                    Spacer(Modifier.weight(1f))
-                                    Text(
-                                        if (pickedInGroup > 0) "$pickedInGroup / ${list.size}" else "${list.size} 个",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        if (open) "  ▴" else "  ▾",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (open) {
-                                    list.forEach { m ->
-                                        val checked = m in selectedModels
-                                        Row(
-                                            Modifier.fillMaxWidth().clickable {
-                                                selectedModels = if (checked) {
-                                                    selectedModels - m
-                                                } else {
-                                                    selectedModels + m
-                                                }
-                                                if (model.isBlank() || checked && model == m) {
-                                                    model = selectedModels.firstOrNull() ?: ""
-                                                }
-                                            },
-                                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                                        ) {
-                                            Checkbox(
-                                                checked = checked,
-                                                onCheckedChange = { c ->
-                                                    selectedModels = if (c) selectedModels + m else selectedModels - m
-                                                    if (model.isBlank() || !c && model == m) {
-                                                        model = selectedModels.firstOrNull() ?: ""
-                                                    }
-                                                }
-                                            )
-                                            Text(
-                                                m,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                modifier = Modifier.weight(1f).padding(vertical = 2.dp)
-                                            )
-                                            TextButton(onClick = {
-                                                expandedModel = if (expandedModel == m) null else m
-                                            }) {
-                                                Text(
-                                                    if (expandedModel == m) "收起" else "参数",
-                                                    style = MaterialTheme.typography.bodySmall
-                                                )
+                                    Checkbox(
+                                        checked = true,
+                                        onCheckedChange = { c ->
+                                            if (!c) {
+                                                selectedModels = selectedModels - m
+                                                modelConfigs = modelConfigs.filterNot { it.name == m }.toMutableList()
+                                                if (model == m) model = selectedModels.firstOrNull() ?: ""
                                             }
                                         }
-                                        if (expandedModel == m) {
-                                            val cfg = modelConfigs.firstOrNull { it.name == m }
-                                                ?: ModelConfig(name = m)
-                                            ModelParamsEditor(cfg) { updated ->
-                                                modelConfigs = modelConfigs
-                                                    .filterNot { it.name == m }
-                                                    .toMutableList()
-                                                    .apply { add(updated) }
+                                    )
+                                    Text(
+                                        m,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    val isDefault = model == m
+                                    Text(
+                                        if (isDefault) "默认 ✓" else "设默认",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isDefault) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { if (!isDefault) model = m }
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                    TextButton(onClick = {
+                                        expandedModel = if (expandedModel == m) null else m
+                                    }) {
+                                        Text(
+                                            if (expandedModel == m) "收起" else "参数",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                }
+                                if (expandedModel == m) {
+                                    ModelParamsEditor(cfg) { updated ->
+                                        modelConfigs = modelConfigs
+                                            .filterNot { it.name == m }
+                                            .toMutableList()
+                                            .apply { add(updated) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 没启用的折起来
+                    if (restModels.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth().clickable { showRestModels = !showRestModels },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                        ) {
+                            Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "未启用 ${restModels.size} 个",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    Text(
+                                        if (showRestModels) "收起" else "展开选用",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                AnimatedVisibility(visible = showRestModels) {
+                                    Column {
+                                        Spacer(Modifier.height(6.dp))
+                                        restModels.forEach { m ->
+                                            Row(
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable {
+                                                        selectedModels = selectedModels + m
+                                                        if (model.isBlank()) model = m
+                                                    }
+                                                    .padding(vertical = 4.dp),
+                                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                            ) {
+                                                Checkbox(checked = false, onCheckedChange = { c ->
+                                                    if (c) {
+                                                        selectedModels = selectedModels + m
+                                                        if (model.isBlank()) model = m
+                                                    }
+                                                })
+                                                Text(
+                                                    m,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
                                             }
                                         }
                                     }
@@ -1280,9 +1295,11 @@ fun ProviderEditScreen(
                             }
                         }
                     }
+
                     if (selectedModels.size > 1) {
+                        Spacer(Modifier.height(8.dp))
                         Text(
-                            "生成时用上面「模型名」那个；其余留作备选，写作台可以随时换",
+                            "写作时用「默认」那一个；其余留作备选，写作台可以随时换",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1310,6 +1327,7 @@ fun ProviderEditScreen(
                     }
                 }
 
+                FormSection("4", "生成参数", "温度 / 输出长度 / 上下文 / 思考强度")
                 TextButton(
                     onClick = { showAdvanced = !showAdvanced },
                     modifier = Modifier.fillMaxWidth()
@@ -1325,7 +1343,7 @@ fun ProviderEditScreen(
                     Slider(temperature, { temperature = it }, valueRange = 0f..1.5f)
                     Text("单次最大输出", fontWeight = FontWeight.Bold)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(2048, 4096, 8192, 16384, 32768).forEach { n ->
+                        listOf(4096, 8192, 16384, 32768, 65536, 131072).forEach { n ->
                             AppChip(
                                 selected = maxTokens == n.toString(),
                                 onClick = { maxTokens = n.toString() },
@@ -1410,7 +1428,7 @@ fun ProviderEditScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text("用量统计（可以全部留空）", fontWeight = FontWeight.Bold)
+                    FormSection("5", "用量与计价", "留空就不统计花费")
                     AppTextField(
                         value = quota,
                         onValueChange = { quota = it },
@@ -1667,7 +1685,7 @@ fun WorkbenchScreen(
                     )
                     if (project != null) {
                         Text(
-                            "${project.genre} · ${project.totalWords} 字",
+                            "${project.genre} · ${WordCount.label(project.totalWords)}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1787,7 +1805,7 @@ fun WorkbenchScreen(
             animationSpec = tween(800, easing = FastOutSlowInEasing),
             label = "wbProgress"
         )
-        val usableProviders = vm.data.providers.filter { it.baseUrl.isNotBlank() }
+        val usableProviders = vm.data.providers.filter { it.baseUrl.isNotBlank() && it.enabled }
         val currentProvider = vm.data.providers.firstOrNull { it.id == p.providerId }
             ?: vm.data.providers.firstOrNull { it.id == vm.data.activeProviderId }
         val currentModel = p.providerModel.ifBlank { currentProvider?.model.orEmpty() }
@@ -1831,47 +1849,84 @@ fun WorkbenchScreen(
                 }
             }
 
-            // 主按钮
+            // 主按钮：继续写 / 加更 占主位；重新生成降级成小字
             item {
-                val src = remember { MutableInteractionSource() }
-                val bg = if (generating) MaterialTheme.colorScheme.surfaceVariant
-                else MaterialTheme.colorScheme.primary
-                val fg = if (generating) MaterialTheme.colorScheme.onSurfaceVariant
-                else MaterialTheme.colorScheme.onPrimary
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .staggerEnter(1)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(bg)
-                        .pressScale(src, 0.98f)
-                        .clickable(interactionSource = src, indication = null) {
-                            if (generating) vm.cancelGenerate() else vm.startGenerate(projectId)
-                        }
-                        .padding(vertical = 18.dp),
-                    contentAlignment = Alignment.Center
+                Row(
+                    Modifier.fillMaxWidth().staggerEnter(1),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (generating) {
-                            ThinkingDots(MaterialTheme.colorScheme.onSurfaceVariant, 6)
-                            Spacer(Modifier.width(10.dp))
+                    val src = remember { MutableInteractionSource() }
+                    val bg = if (generating) MaterialTheme.colorScheme.surfaceVariant
+                    else MaterialTheme.colorScheme.primary
+                    val fg = if (generating) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onPrimary
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(bg)
+                            .pressScale(src, 0.98f)
+                            .clickable(interactionSource = src, indication = null) {
+                                if (generating) vm.cancelGenerate() else vm.startGenerate(projectId)
+                            }
+                            .padding(vertical = 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (generating) {
+                                ThinkingDots(MaterialTheme.colorScheme.onSurfaceVariant, 6)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(
+                                when {
+                                    generating -> "停止"
+                                    done == 0 -> "一键生成"
+                                    done >= total -> "再写一章"
+                                    else -> "继续写第 ${done + 1} 章"
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = fg,
+                                maxLines = 1
+                            )
                         }
-                        Text(
-                            when {
-                                generating -> "停止生成"
-                                done == 0 -> "一键生成"
-                                done >= total -> "重新生成"
-                                else -> "继续写第 ${done + 1} 章"
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = fg
-                        )
+                    }
+
+                    // 加更：和主按钮同等高度，右侧固定宽度
+                    if (!generating) {
+                        val asrc = remember { MutableInteractionSource() }
+                        Box(
+                            Modifier
+                                .width(96.dp)
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(MaterialTheme.colorScheme.surface)
+                                .pressScale(asrc, 0.96f)
+                                .clickable(interactionSource = asrc, indication = null) {
+                                    showAppend = true
+                                }
+                                .padding(vertical = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    "加更",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
                     }
                 }
             }
 
-            // 次要操作
+            // 次要操作：记忆库 / 导出
             item {
                 Row(
                     Modifier.fillMaxWidth().staggerEnter(2),
@@ -1885,25 +1940,10 @@ fun WorkbenchScreen(
                             .background(MaterialTheme.colorScheme.surface)
                             .pressScale(msrc, 0.96f)
                             .clickable(interactionSource = msrc, indication = null, onClick = onOpenMemory)
-                            .padding(vertical = 13.dp),
+                            .padding(vertical = 12.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text("记忆库", style = MaterialTheme.typography.labelMedium)
-                    }
-                    if (!generating) {
-                        val asrc = remember { MutableInteractionSource() }
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(MaterialTheme.colorScheme.surface)
-                                .pressScale(asrc, 0.96f)
-                                .clickable(interactionSource = asrc, indication = null) { showAppend = true }
-                                .padding(vertical = 13.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("加更", style = MaterialTheme.typography.labelMedium)
-                        }
                     }
                     Exporter.Format.entries.forEach { format ->
                         val esrc = remember { MutableInteractionSource() }
@@ -1916,7 +1956,7 @@ fun WorkbenchScreen(
                                 .clickable(interactionSource = esrc, indication = null) {
                                     vm.exportFile(projectId, format)?.let { shareFile(context, it) }
                                 }
-                                .padding(vertical = 13.dp),
+                                .padding(vertical = 12.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(format.label, style = MaterialTheme.typography.labelMedium)
@@ -1975,7 +2015,7 @@ fun WorkbenchScreen(
                                     )
                                     val list = prov.models.ifEmpty {
                                         listOfNotNull(prov.model.takeIf { it.isNotBlank() })
-                                    }
+                                    }.filter { vm.isModelEnabled(prov.id, it) }
                                     if (list.isEmpty()) {
                                         Text(
                                             "这个服务商还没选模型",
@@ -2247,7 +2287,7 @@ fun WorkbenchScreen(
                             )
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                if (ch.done) "${ch.content.length} 字" else "待写",
+                                if (ch.done) WordCount.label(ch.content.length) else "待写",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (ch.done) MaterialTheme.colorScheme.onSurfaceVariant
                                 else MaterialTheme.colorScheme.outline
@@ -3156,7 +3196,20 @@ fun ImportScreen(
     onOpenScan: () -> Unit = {}
 ) {
     var input by remember { mutableStateOf("") }
+    // 从外部带进来的书名（am start -e q 书名），进来就直接搜
+    val incomingHost = LocalContext.current
+    val incomingQuery = remember {
+        (incomingHost as? android.app.Activity)?.intent?.getStringExtra("q").orEmpty()
+    }
+    LaunchedEffect(incomingQuery) {
+        if (incomingQuery.isNotBlank()) {
+            input = incomingQuery
+            vm.searchOnline(incomingQuery)
+        }
+    }
     val catalog = vm.importCatalog
+    val dlState = vm.downloadState()
+    LaunchedEffect(dlState?.done, dlState?.running) { vm.syncFromStore() }
     val ctx = LocalContext.current
     var localMsg by remember { mutableStateOf("") }
     var pendingImport by remember {
@@ -3207,7 +3260,7 @@ fun ImportScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "共 ${parsed.chapters.size} 章 · ${parsed.chapters.sumOf { it.content.length }} 字",
+                        "共 ${parsed.chapters.size} 章 · ${WordCount.label(parsed.chapters.sumOf { it.content.length })}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3297,12 +3350,84 @@ fun ImportScreen(
                     }
                 }
             }
+            // —— 未下完的书：接着下，地址还是原来那套 ——
+            run {
+                val unfinished = vm.unfinishedBooks()
+                if (unfinished.isNotEmpty()) {
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "未下完",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "${unfinished.size} 本 · 随时接着下",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    items(unfinished, key = { "u_" + it.id }) { b ->
+                        Card(Modifier.fillMaxWidth()) {
+                            Row(
+                                Modifier.padding(14.dp).fillMaxWidth(),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "《${b.title}》",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Spacer(Modifier.height(3.dp))
+                                    Text(
+                                        "${b.chapters.size} / ${b.pendingChapters.size} 章 · 已下的在书架",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                val isThis = dlState?.running == true && dlState.bookId == b.id
+                                if (isThis) {
+                                    Text(
+                                        "下载中",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                } else {
+                                    Button(
+                                        onClick = { vm.resumeDownload(b.id) },
+                                        enabled = dlState?.running != true
+                                    ) { Text("继续") }
+                                    Spacer(Modifier.width(4.dp))
+                                    TextButton(onClick = { vm.removeImportedBook(b.id) }) {
+                                        Text("删掉")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    item { Spacer(Modifier.height(4.dp)) }
+                }
+            }
             item {
                 Text(
-                    "输入书名搜索候选站点，或直接粘贴小说目录页地址解析。只下载你有权下载的内容（公版书、已授权或你自己的作品），并遵守来源站点的规则。",
-                    style = MaterialTheme.typography.bodySmall
+                    "在线书库",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "输入书名，自动去几个免费书站找；也可以直接粘目录页地址。只下载公版或你有权阅读的内容。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
                 AppTextField(
                     value = input,
                     onValueChange = { input = it },
@@ -3312,50 +3437,130 @@ fun ImportScreen(
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { vm.searchNovel(input) },
-                        enabled = !vm.importBusy && input.isNotBlank()
-                    ) { Text("按书名搜索") }
+                        onClick = { vm.searchOnline(input) },
+                        enabled = !vm.importBusy && input.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) { Text("搜书") }
                     OutlinedButton(
                         onClick = { vm.parseCatalog(input) },
-                        enabled = !vm.importBusy && input.startsWith("http")
-                    ) { Text("按地址解析目录") }
+                        enabled = !vm.importBusy && input.startsWith("http"),
+                        modifier = Modifier.weight(1f)
+                    ) { Text("解析地址") }
                 }
                 if (vm.importStatus.isNotBlank()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(vm.importStatus, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        vm.importStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (vm.importStatus.startsWith("❌"))
+                            MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val dl = vm.downloadState()
+                if (dl != null && dl.running) {
+                    Spacer(Modifier.height(10.dp))
+                    LinearProgressIndicator(
+                        progress = { dl.done.toFloat() / dl.total.coerceAtLeast(1) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "《${dl.title}》 ${dl.done} / ${dl.total}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "后台下载中",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(onClick = { vm.cancelImport() }, modifier = Modifier.fillMaxWidth()) {
+                        Text("停止下载，已下的留着")
+                    }
                 }
             }
-            if (catalog != null) {
+            catalog?.let { book ->
                 item {
                     Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text("《${catalog.title}》", fontWeight = FontWeight.Bold)
-                            if (catalog.author.isNotBlank()) Text("作者：${catalog.author}", style = MaterialTheme.typography.bodySmall)
-                            Text("共 ${catalog.chapters.size} 章 · 来源：${catalog.sourceUrl}", style = MaterialTheme.typography.bodySmall)
-                            Spacer(Modifier.height(8.dp))
-                            if (vm.importBusy) {
-                                Button(onClick = { vm.cancelImport() }, modifier = Modifier.fillMaxWidth()) {
-                                    Text("停止下载（已下部分保留）")
-                                }
-                            } else {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(
+                                "《${book.title}》",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                buildString {
+                                    if (book.author.isNotBlank()) append("${book.author} · ")
+                                    append("${book.chapters.size} 章")
+                                    append(" · ${book.sourceName}")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            if (!vm.importBusy) {
                                 Button(
-                                    onClick = { vm.startImportDownload(onDone = onOpenBook) },
+                                    onClick = { vm.startDownload(onDone = onOpenBook) },
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("下载全本到书架") }
+                            } else {
+                                Text(
+                                    "下载在后台跑，可以退出这个页面",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
                 }
             }
-            if (vm.importCandidates.isNotEmpty() && catalog == null) {
-                item { Text("候选站点（点一个解析它的目录）", fontWeight = FontWeight.Bold) }
-                items(vm.importCandidates, key = { it.url }) { c ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth().clickable(enabled = !vm.importBusy) { vm.parseCatalog(c.url) }
+            if (vm.importHits.isNotEmpty() && catalog == null) {
+                item {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                     ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(c.title, style = MaterialTheme.typography.bodyMedium)
-                            Text(c.url, style = MaterialTheme.typography.bodySmall)
+                        Text("搜索结果", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "点一本看目录",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                items(vm.importHits, key = { it.sourceId + it.url }) { hit ->
+                    val src = remember { MutableInteractionSource() }
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .pressScale(src, 0.98f)
+                            .clickable(interactionSource = src, indication = null, enabled = !vm.importBusy) {
+                                vm.openOnlineBook(hit)
+                            }
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text(
+                                hit.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                buildString {
+                                    if (hit.author.isNotBlank()) append("${hit.author} · ")
+                                    append(hit.sourceName)
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
@@ -3384,7 +3589,7 @@ fun ImportedBookScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Text("${book.author.ifBlank { "佚名" }} · ${book.chapters.size} 章 · 约 ${book.totalWords} 字", style = MaterialTheme.typography.bodySmall)
+                Text("${book.author.ifBlank { "佚名" }} · ${book.chapters.size} 章 · 约 ${WordCount.label(book.totalWords)}", style = MaterialTheme.typography.bodySmall)
                 Text("来源：${book.sourceUrl}", style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp))
                 Text("导出为", fontWeight = FontWeight.Bold)
@@ -3670,7 +3875,7 @@ private fun ModelParamsEditor(cfg: ModelConfig, onUpdate: (ModelConfig) -> Unit)
             modifier = Modifier.padding(top = 6.dp)
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0, 2048, 4096, 8192, 16384, 32768).forEach { n ->
+            listOf(0, 8192, 16384, 32768, 65536, 131072).forEach { n ->
                 AppChip(
                     selected = cfg.maxTokens == n,
                     onClick = { onUpdate(cfg.copy(maxTokens = n)) },
@@ -3678,7 +3883,7 @@ private fun ModelParamsEditor(cfg: ModelConfig, onUpdate: (ModelConfig) -> Unit)
                 )
             }
         }
-        if (cfg.maxTokens != 0 && cfg.maxTokens !in listOf(2048, 4096, 8192, 16384, 32768)) {
+        if (cfg.maxTokens != 0 && cfg.maxTokens !in listOf(4096, 8192, 16384, 32768, 65536, 131072)) {
             Text(
                 "当前自定义：${cfg.maxTokens}",
                 style = MaterialTheme.typography.labelSmall,
@@ -3700,19 +3905,73 @@ internal fun AppTextField(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     minLines: Int = 1,
-    maxLines: Int = Int.MAX_VALUE
+    maxLines: Int = Int.MAX_VALUE,
+    /** 打码模式：只露头尾，右边有小眼睛切换 */
+    secret: Boolean = false
 ) {
+    if (!secret) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = label,
+            placeholder = placeholder,
+            singleLine = singleLine,
+            enabled = enabled,
+            modifier = modifier,
+            minLines = minLines,
+            maxLines = maxLines,
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                unfocusedBorderColor = Color.Transparent,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        )
+        return
+    }
+
+    var revealed by remember { mutableStateOf(false) }
     OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
+        value = if (revealed) value else maskSecret(value),
+        onValueChange = { typed ->
+            if (revealed) {
+                onValueChange(typed)
+            } else {
+                // 打码状态下只处理追加/删除，避免把掩码写回真实值
+                val masked = maskSecret(value)
+                when {
+                    typed.length > masked.length -> onValueChange(value + typed.removePrefix(masked))
+                    typed.length < masked.length ->
+                        onValueChange(value.dropLast((masked.length - typed.length).coerceAtMost(value.length)))
+                }
+            }
+        },
         label = label,
         placeholder = placeholder,
-        singleLine = singleLine,
+        singleLine = true,
         enabled = enabled,
         modifier = modifier,
-        minLines = minLines,
-        maxLines = maxLines,
         shape = RoundedCornerShape(16.dp),
+        trailingIcon = {
+            val isrc = remember { MutableInteractionSource() }
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .pressScale(isrc, 0.9f)
+                    .clickable(interactionSource = isrc, indication = null) { revealed = !revealed },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    if (revealed) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                    contentDescription = if (revealed) "隐藏" else "显示",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
         colors = OutlinedTextFieldDefaults.colors(
             unfocusedBorderColor = Color.Transparent,
             unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -3721,6 +3980,15 @@ internal fun AppTextField(
             unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
     )
+}
+
+/** 只露头尾，中间用 • 盖住 */
+internal fun maskSecret(s: String): String {
+    if (s.isEmpty()) return ""
+    if (s.length <= 8) return "•".repeat(s.length)
+    val head = s.take(4)
+    val tail = s.takeLast(4)
+    return head + "•".repeat((s.length - 8).coerceAtMost(14)) + tail
 }
 
 /** 顶部菜单里的横向大方块 */

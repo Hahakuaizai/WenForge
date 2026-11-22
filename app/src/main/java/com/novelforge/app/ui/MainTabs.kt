@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -36,6 +37,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -69,13 +73,23 @@ fun MainTabsScreen(
     onOpenStats: () -> Unit,
     onOpenImport: () -> Unit,
     onOpenReader: (kind: String, id: String, chapter: Int) -> Unit,
-    onOpenScan: () -> Unit = {}
+    onOpenScan: () -> Unit = {},
+    onOpenUpdates: () -> Unit = {},
+    onOpenStorage: () -> Unit = {}
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val stateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
 
+    // 输入法弹出来的时候，底部导航跟着躲开，别被顶上来
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val bottomPad by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (imeVisible) 0.dp else 74.dp,
+        animationSpec = androidx.compose.animation.core.tween(180),
+        label = "bottomPad"
+    )
+
     Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().padding(bottom = 74.dp)) {
+        Box(Modifier.fillMaxSize().padding(bottom = bottomPad)) {
             stateHolder.SaveableStateProvider(tab) {
             when (tab) {
                 0 -> ShelfScreen(
@@ -88,13 +102,7 @@ fun MainTabsScreen(
                 1 -> HomeScreen(
                     vm = vm,
                     onCreate = onCreate,
-                    onOpenShelf = { tab = 0 },
-                    onOpenProviders = onOpenProviders,
-                    onOpenSettings = onOpenSettings,
-                    onOpenStats = onOpenStats,
-                    onOpenImport = onOpenImport,
-                    onOpenProject = onOpenProject,
-                    onOpenImportedBook = onOpenImportedBook
+                    onOpenProject = onOpenProject
                 )
                 2 -> ImportScreen(
                     vm = vm,
@@ -106,17 +114,27 @@ fun MainTabsScreen(
                     vm = vm,
                     onOpenProviders = onOpenProviders,
                     onOpenStats = onOpenStats,
-                    onOpenSettings = onOpenSettings
+                    onOpenSettings = onOpenSettings,
+                    onOpenUpdates = onOpenUpdates,
+                    onOpenStorage = onOpenStorage
                 )
             }
             }
         }
 
-        BottomBar(
-            selected = tab,
-            onSelect = { tab = it },
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
+        androidx.compose.animation.AnimatedVisibility(
+            visible = !imeVisible,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(120)) +
+                androidx.compose.animation.slideInVertically { it / 3 },
+            exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(120)) +
+                androidx.compose.animation.slideOutVertically { it / 3 }
+        ) {
+            BottomBar(
+                selected = tab,
+                onSelect = { tab = it }
+            )
+        }
     }
 }
 
@@ -194,7 +212,9 @@ fun MeScreen(
     vm: AppViewModel,
     onOpenProviders: () -> Unit,
     onOpenStats: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenUpdates: () -> Unit = {},
+    onOpenStorage: () -> Unit = {}
 ) {
     Column(
         Modifier
@@ -227,6 +247,20 @@ fun MeScreen(
             MeRow("用量统计", "花费、token、缓存命中、逐章用量", Icons.Default.BarChart, onOpenStats)
             MeDivider()
             MeRow("全局设置", "分阶段模型、记忆库、提示词", Icons.Default.Settings, onOpenSettings)
+            MeDivider()
+            MeRow(
+                "版本与更新",
+                "从电脑拉最新版，看近十次改动",
+                Icons.Default.CloudDownload,
+                onOpenUpdates
+            )
+            MeDivider()
+            MeRow(
+                "存储管理",
+                "各部分占用、清缓存",
+                Icons.Default.Storage,
+                onOpenStorage
+            )
         }
 
         Spacer(Modifier.height(24.dp))

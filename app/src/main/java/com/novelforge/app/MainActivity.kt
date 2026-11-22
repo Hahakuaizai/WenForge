@@ -31,6 +31,8 @@ import com.novelforge.app.ui.ScanImportScreen
 import com.novelforge.app.ui.SettingsScreen
 import com.novelforge.app.ui.ShelfScreen
 import com.novelforge.app.ui.StatsScreen
+import com.novelforge.app.ui.StorageScreen
+import com.novelforge.app.ui.UpdatesScreen
 import com.novelforge.app.ui.WorkbenchScreen
 
 class MainActivity : ComponentActivity() {
@@ -68,7 +70,9 @@ class MainActivity : ComponentActivity() {
                                 onOpenStats = { nav.navigate("stats") },
                                 onOpenImport = { nav.navigate("import") },
                                 onOpenReader = { kind, id, ch -> nav.navigate("read/$kind/$id/$ch") },
-                                onOpenScan = { nav.navigate("scan") }
+                                onOpenScan = { nav.navigate("scan") },
+                                onOpenUpdates = { nav.navigate("updates") },
+                                onOpenStorage = { nav.navigate("storage") }
                             )
                         }
                         composable("create") {
@@ -103,6 +107,12 @@ class MainActivity : ComponentActivity() {
                                 onDone = { nav.popBackStack() },
                                 onBack = { nav.popBackStack() }
                             )
+                        }
+                        composable("storage") {
+                            StorageScreen(vm) { nav.popBackStack() }
+                        }
+                        composable("updates") {
+                            UpdatesScreen(vm) { nav.popBackStack() }
                         }
                         composable("settings") {
                             SettingsScreen(vm = vm, onBack = { nav.popBackStack() })

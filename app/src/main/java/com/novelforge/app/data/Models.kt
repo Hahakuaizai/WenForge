@@ -36,7 +36,9 @@ data class ProviderConfig(
     /** 自定义单价（美元/百万 token），-1 = 用内置价格表。分开三项：输入未缓存 / 输入缓存命中 / 输出 */
     val priceInputPer1M: Double = -1.0,
     val priceCachedPer1M: Double = -1.0,
-    val priceOutputPer1M: Double = -1.0
+    val priceOutputPer1M: Double = -1.0,
+    /** 是否启用；关掉的不出现在写作的切换列表里 */
+    var enabled: Boolean = true,
 )
 
 /** 单个模型的独立参数。
@@ -54,7 +56,9 @@ data class ModelConfig(
     /** 自动压缩阈值；0 = 用服务商的 */
     var autoCompactAt: Float = 0f,
     /** 单次输出上限；0 = 用服务商的 */
-    var maxTokens: Int = 0
+    var maxTokens: Int = 0,
+    /** 是否显示在写作界面的切换列表里 */
+    var enabled: Boolean = true
 )
 
 /** 章节 */
@@ -100,6 +104,17 @@ data class NovelProject(
     val totalWords: Int get() = chapters.sumOf { it.content.length }
 }
 
+/** 本地记下的更新记录（设置页看近 10 次） */
+@Serializable
+data class UpdateRecord(
+    val versionName: String,
+    val versionCode: Int,
+    val time: String,
+    val notes: List<String> = emptyList(),
+    /** 是否已经装上去了 */
+    val installed: Boolean = false
+)
+
 /** 全局设置 */
 @Serializable
 data class AppSettings(
@@ -126,7 +141,12 @@ data class AppSettings(
     /** 阅读背景：paper / white / sepia / green / gray / dark */
     var readerTheme: String = "paper",
     /** 翻页方式：scroll 滚动 / chapter 章节横滑 / page 分页横滑 */
-    var readerPageMode: String = "scroll"
+    var readerPageMode: String = "scroll",
+    // —— 更新 ——
+    /** 更新服务地址；默认走 adb reverse 的本机端口，接 WiFi 时可改成电脑局域网地址 */
+    var updateServerUrl: String = "http://127.0.0.1:8787",
+    /** 近 10 次更新记录（新的在前） */
+    var updateHistory: List<UpdateRecord> = emptyList()
 )
 
 /** 故事记忆库里的人物条目（跨章节、跨会话共享，随生成自动更新，也可手动改）。 */
@@ -196,6 +216,13 @@ data class ImportedChapter(
     var content: String = ""
 )
 
+/** 待下载章节的地址，随书一起存，续传用同一套地址 */
+@Serializable
+data class PendingChapter(
+    val title: String = "",
+    val url: String = ""
+)
+
 @Serializable
 data class ImportedBook(
     val id: String = UUID.randomUUID().toString(),
@@ -203,8 +230,12 @@ data class ImportedBook(
     var author: String = "",
     var sourceUrl: String = "",
     var chapters: MutableList<ImportedChapter> = mutableListOf(),
-    /** local = 本地文件，crawl = 爬虫下载 */
+    /** local = 本地文件，crawl = 在线书库 */
     var origin: String = "local",
+    /** 这本书的完整章节地址表：未下完时留着，续传接着往下抓，不用重新搜 */
+    var pendingChapters: List<PendingChapter> = emptyList(),
+    /** 书源 id（qqxs / qbtr / generic） */
+    var sourceId: String = "",
     val createdAt: Long = System.currentTimeMillis()
 ) {
     val totalWords: Int get() = chapters.sumOf { it.content.length }

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -31,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -133,6 +135,7 @@ fun ReaderScreen(
     var themeKey by remember { mutableStateOf(settings.readerTheme) }
     var pageMode by remember { mutableStateOf(settings.readerPageMode) }
     var showSettings by remember { mutableStateOf(false) }
+    var showToc by remember { mutableStateOf(false) }
     var chapter by remember {
         mutableIntStateOf(
             if (startChapter > 0 && book != null) {
@@ -321,6 +324,26 @@ fun ReaderScreen(
                     )
                 }
             }
+            val tsrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(theme.fg.copy(alpha = 0.06f))
+                    .pressScale(tsrc, 0.9f)
+                    .clickable(interactionSource = tsrc, indication = null) {
+                        showToc = true
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.List,
+                    contentDescription = "目录",
+                    modifier = Modifier.size(18.dp),
+                    tint = theme.fg
+                )
+            }
+            Spacer(Modifier.width(8.dp))
             val ssrc = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             Box(
                 Modifier
@@ -340,6 +363,24 @@ fun ReaderScreen(
                     tint = theme.fg
                 )
             }
+        }
+
+        // 目录
+        AnimatedVisibility(
+            visible = showToc,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            TocSheet(
+                chapters = book.chapters,
+                current = chapter,
+                theme = theme,
+                onPick = {
+                    chapter = it
+                    showToc = false
+                },
+                onClose = { showToc = false }
+            )
         }
 
         // 设置面板
@@ -555,6 +596,137 @@ private fun SettingsPanel(
                             color = if (sel) (if (theme.dark) Color(0xFF9FC0E4) else Color(0xFF2C5D8F)) else muted,
                             fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── 目录（分卷）────────────────────────────────────────────────
+
+/** 从「第一卷 小丑第1章 绯红」里拆出卷名和章名 */
+private fun volumeOf(title: String): String? {
+    val m = Regex("""^(第[0-9一二三四五六七八九十百千零两]+[卷部集篇]\s*[^第]{0,14})""").find(title)
+    return m?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
+}
+
+private fun chapterNameIn(title: String, volume: String?): String =
+    if (volume != null) title.removePrefix(volume).trim().ifBlank { title } else title
+
+private data class TocRow(
+    val volume: String? = null,
+    val index: Int = -1,
+    val title: String = ""
+)
+
+private fun buildToc(chapters: List<ReaderChapter>): List<TocRow> {
+    val rows = mutableListOf<TocRow>()
+    var lastVolume: String? = null
+    chapters.forEachIndexed { i, ch ->
+        val v = volumeOf(ch.title)
+        if (v != null && v != lastVolume) {
+            rows.add(TocRow(volume = v))
+            lastVolume = v
+        }
+        rows.add(TocRow(index = i, title = chapterNameIn(ch.title, v ?: lastVolume)))
+    }
+    return rows
+}
+
+@Composable
+private fun TocSheet(
+    chapters: List<ReaderChapter>,
+    current: Int,
+    theme: ReaderTheme,
+    onPick: (Int) -> Unit,
+    onClose: () -> Unit
+) {
+    val panelBg = if (theme.dark) Color(0xFF1B1E22) else Color.White
+    val fg = if (theme.dark) Color(0xFFD5D8DC) else Color(0xFF14161A)
+    val muted = if (theme.dark) Color(0xFF868B92) else Color(0xFF8A8F96)
+    val accent = if (theme.dark) Color(0xFF7FA8D9) else Color(0xFF3A6EA5)
+    val rows = remember(chapters) { buildToc(chapters) }
+    // 定位到当前章，但要把它上面的卷标题一起露出来
+    val curRow = rows.indexOfFirst { it.index == current }
+    val anchor = if (curRow > 0 && rows[curRow - 1].volume != null) curRow - 1
+    else curRow.coerceAtLeast(0)
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = anchor)
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.32f))
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null
+            ) { onClose() }
+    ) {
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.78f)
+                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .background(panelBg)
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("目录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = fg)
+                Spacer(Modifier.width(10.dp))
+                Text("${chapters.size} 章", style = MaterialTheme.typography.labelSmall, color = muted)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "关闭",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent,
+                    modifier = Modifier
+                        .clickable { onClose() }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(muted.copy(alpha = 0.22f)))
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)
+            ) {
+                items(rows) { row ->
+                    if (row.volume != null) {
+                        Text(
+                            row.volume,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = muted,
+                            modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 6.dp)
+                        )
+                    } else {
+                        val isCur = row.index == current
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(row.index) }
+                                .padding(horizontal = 20.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                row.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isCur) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (isCur) accent else fg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (isCur) {
+                                Spacer(Modifier.width(8.dp))
+                                Text("读到这里", style = MaterialTheme.typography.labelSmall, color = accent)
+                            }
+                        }
                     }
                 }
             }
