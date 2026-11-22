@@ -164,6 +164,8 @@ fun ReaderScreen(
     var jumpRequest by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     // 正在跳转：这段时间别让滚动监听把 chapter 改回旧值
     var jumping by remember { mutableStateOf(false) }
+    // 章内位置 0..1（滚动模式=item 内分数偏移，翻页模式=章内页进度）
+    var readFrac by remember { mutableFloatStateOf(vm.readProgressFracOf(kind, bookId)) }
     val scrollListState = rememberLazyListState()
 
     // 滚动模式的跳转（另外两种模式在各自的 pager 旁边处理）
@@ -186,15 +188,15 @@ fun ReaderScreen(
 
     // 章节变了就记进度。加 700ms 防抖：翻书时别每翻一章就重写一次
     // 10MB 的 data.json（之前卡顿有一部分就是它）。
-    androidx.compose.runtime.LaunchedEffect(chapter) {
+    androidx.compose.runtime.LaunchedEffect(chapter, readFrac) {
         if (book == null) return@LaunchedEffect
         kotlinx.coroutines.delay(700)
-        vm.saveReadProgress(kind, bookId, chapter)
+        vm.saveReadProgress(kind, bookId, chapter, readFrac)
     }
     // 离开阅读页立刻落盘，别等防抖
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
-            if (book != null) vm.saveReadProgress(kind, bookId, chapter)
+            if (book != null) vm.saveReadProgress(kind, bookId, chapter, readFrac)
         }
     }
 
@@ -268,7 +270,12 @@ fun ReaderScreen(
                         fontSize = fontSize,
                         lineHeight = lineHeight,
                         index = page,
-                        total = book.chapters.size
+                        total = book.chapters.size,
+                        // 只有当前页恢复位置，翻到别的章从头开始
+                        restoreFrac = if (page == pager.currentPage) readFrac else 0f,
+                        onScrollFrac = { f ->
+                            if (page == pager.currentPage) readFrac = f
+                        }
                     )
                 }
             }
@@ -287,8 +294,13 @@ fun ReaderScreen(
                     val pages = remember(book, perPage) { paginate(book.chapters, perPage) }
                     val pager = rememberPagerState(
                         initialPage = remember(pages) {
-                            pages.indexOfFirst { it.chapterIndex == chapter }
-                                .coerceAtLeast(0)
+                            // 章起始页 + 章内位置换算成页偏移
+                            val first = pages.indexOfFirst { it.chapterIndex == chapter }
+                            if (first < 0) 0 else {
+                                val sameCh = pages.count { it.chapterIndex == chapter }
+                                val off = (readFrac * sameCh).toInt()
+                                (first + off).coerceIn(0, pages.size - 1)
+                            }
                         },
                         pageCount = { pages.size }
                     )
@@ -311,7 +323,14 @@ fun ReaderScreen(
                             Haptics.select(appCtx)
                         }
                         lastPage = pager.currentPage
-                        pages.getOrNull(pager.currentPage)?.let { chapter = it.chapterIndex }
+                        pages.getOrNull(pager.currentPage)?.let { pg ->
+                            chapter = pg.chapterIndex
+                            // 章内页进度：当前页在这一章里排第几 / 这章共几页
+                            val sameCh = pages.count { it.chapterIndex == pg.chapterIndex }
+                            val idxInCh = pages.subList(0, pager.currentPage)
+                                .count { it.chapterIndex == pg.chapterIndex }
+                            readFrac = if (sameCh > 0) idxInCh.toFloat() / sameCh else 0f
+                        }
                     }
                     HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { i ->
                         val page = pages[i]
@@ -350,16 +369,32 @@ fun ReaderScreen(
             }
             else -> {
                 val listState = scrollListState
-                // 启动时定位到上次读到的章
+                // 启动时定位到上次读到的地方（章 + 章内偏移）
                 androidx.compose.runtime.LaunchedEffect(Unit) {
-                    if (chapter > 0) {
-                        runCatching { listState.scrollToItem(chapter) }
+                    if (chapter > 0 || readFrac > 0f) {
+                        runCatching {
+                            val info = listState.layoutInfo
+                            val itemH = info.visibleItemsInfo.firstOrNull()?.size ?: 0
+                            val off = (readFrac * itemH).toInt()
+                            listState.scrollToItem(chapter, off)
+                        }
                     }
                 }
-                // 滚到哪章就记哪章
+                // 滚到哪就记哪：章 + 章内偏移
                 androidx.compose.runtime.LaunchedEffect(listState) {
-                    snapshotFlow { listState.firstVisibleItemIndex }
-                        .collect { idx -> if (!jumping) chapter = idx }
+                    snapshotFlow {
+                        val info = listState.layoutInfo
+                        val first = info.visibleItemsInfo.firstOrNull()
+                        val idx = listState.firstVisibleItemIndex
+                        val h = first?.size ?: 0
+                        val off = if (h > 0) (-first!!.offset).toFloat() / h else 0f
+                        idx to off.coerceIn(0f, 1f)
+                    }.collect { (idx, off) ->
+                        if (!jumping) {
+                            chapter = idx
+                            readFrac = off
+                        }
+                    }
                 }
                 LazyColumn(
                     state = listState,
@@ -607,9 +642,32 @@ private fun ChapterPage(
     fontSize: Float,
     lineHeight: Float,
     index: Int,
-    total: Int
+    total: Int,
+    restoreFrac: Float = 0f,
+    onScrollFrac: (Float) -> Unit = {}
 ) {
     val state = rememberLazyListState()
+    // 进入时恢复章内位置（只在第一次生效）
+    var restored by remember(chapter) { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(chapter) {
+        if (!restored && restoreFrac > 0f) {
+            runCatching {
+                val info = state.layoutInfo
+                val itemH = info.visibleItemsInfo.firstOrNull()?.size ?: 0
+                state.scrollToItem(0, (restoreFrac * itemH).toInt())
+            }
+            restored = true
+        }
+    }
+    // 滚动时上报章内位置
+    androidx.compose.runtime.LaunchedEffect(state, chapter) {
+        snapshotFlow {
+            val info = state.layoutInfo
+            val first = info.visibleItemsInfo.firstOrNull()
+            val h = first?.size ?: 0
+            if (h > 0) (-first!!.offset).toFloat() / h else 0f
+        }.collect { onScrollFrac(it.coerceIn(0f, 1f)) }
+    }
     LazyColumn(
         state = state,
         modifier = Modifier.fillMaxSize(),

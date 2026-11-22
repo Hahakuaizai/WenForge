@@ -795,11 +795,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun readProgressOf(kind: String, bookId: String): Int =
         store.data.settings.readProgress[progressKey(kind, bookId)] ?: 0
 
-    /** 记下读到哪了。只在章变化时写，避免频繁落盘 */
-    fun saveReadProgress(kind: String, bookId: String, chapterIndex: Int) {
+    /** 上次读到这一章的哪个位置（0..1 比例）；没记录返回 0 */
+    fun readProgressFracOf(kind: String, bookId: String): Float =
+        store.data.settings.readProgressFrac[progressKey(kind, bookId)] ?: 0f
+
+    /**
+     * 记下读到哪了。
+     * @param chapterIndex 章序号（0 基）
+     * @param frac 章内位置 0..1（滚动模式是 item 内分数偏移，翻页模式是页进度）
+     *
+     * 章没变、位置也没明显变化就不写盘 —— data.json 有 10MB，
+     * 每滚一下都写会把书架拖卡。
+     */
+    fun saveReadProgress(
+        kind: String,
+        bookId: String,
+        chapterIndex: Int,
+        frac: Float = 0f
+    ) {
         val key = progressKey(kind, bookId)
-        if (store.data.settings.readProgress[key] == chapterIndex) return
-        store.data.settings.readProgress[key] = chapterIndex
+        val st = store.data.settings
+        val oldCh = st.readProgress[key]
+        val oldFrac = st.readProgressFrac[key] ?: 0f
+        val chChanged = oldCh != chapterIndex
+        val fracMoved = kotlin.math.abs(oldFrac - frac) > 0.004f
+        if (!chChanged && !fracMoved) return
+        st.readProgress[key] = chapterIndex
+        st.readProgressFrac[key] = frac.coerceIn(0f, 1f)
         store.save()
     }
 

@@ -1063,6 +1063,18 @@ private fun BookCarousel(
         }
 
         /** 点 (px,py) 命中了哪本书：按书的实体多边形测，离中心最近的优先 */
+        /**
+         * 点 (px,py) 命中了哪本书。
+         *
+         * 两轮判定：
+         *  1) 精确多边形 —— 书是斜的（书脊 + 顶面 + 封面），用实体轮廓测。
+         *     重叠时取「绘制在上面的那本」（relOfStatic 大的，右边的书压住左边书的封面右缘），
+         *     这样手指压到哪本就切到哪本，跟眼睛看到的一致。
+         *     以前这里取「离中心最近」，所以点远处那本经常没反应。
+         *  2) 兜底 —— 书之间有缝、侧面书太薄，精确多边形容易落空。
+         *     这时算「点击点到书实体包围盒」的真实距离，容差 30dp，取最近的。
+         *     不加离中心惩罚（以前有 ad*0.6，导致远处的书永远点不过近处的）。
+         */
         fun bookAt(px: Float, py: Float, p: Float): Int? {
             val dx = cover * 0.66f
             val dy = cover * -0.30f
@@ -1076,30 +1088,29 @@ private fun BookCarousel(
                 spine, skew + H,
                 0f, H
             )
+
+            // 第一轮：精确多边形。同一点落进多本时，取绘制层级最高（最右）的那本。
             var best: Int? = null
-            var bestAd = Float.MAX_VALUE
+            var bestD = -Float.MAX_VALUE
             for (i in books.indices) {
-                val ad = kotlin.math.abs(relOfStatic(i, p, n))
-                if (ad > rangeF || ad >= bestAd) continue
+                val d = relOfStatic(i, p, n)
+                if (kotlin.math.abs(d) > rangeF) continue
                 val (bx, by) = bookOrigin(i, p, 1.45f)
-                if (pointInPolygon(px - bx, py - by, poly)) {
+                if (pointInPolygon(px - bx, py - by, poly) && d > bestD) {
                     best = i
-                    bestAd = ad
+                    bestD = d
                 }
             }
             if (best != null) return best
 
-            // 精确多边形没中（书之间有空隙、侧面书太薄）：退一步，
-            // 找「点击点到书实体包围盒」最近的那本，容差 26dp。
-            // 这样两本书之间隔好几本也能一下点中远处那本。
-            val tol = 26f * density.density
+            // 第二轮：到包围盒的最近距离
+            val tol = 30f * density.density
             var nearBest: Int? = null
             var nearDist = Float.MAX_VALUE
             for (i in books.indices) {
                 val ad = kotlin.math.abs(relOfStatic(i, p, n))
                 if (ad > rangeF) continue
                 val (bx, by) = bookOrigin(i, p, 1.45f)
-                // 实体包围盒：x 从 0 到 spine+dx，y 从 dy 到 skew+dy+H
                 val lx = px - bx
                 val ly = py - by
                 val x0 = 0f
@@ -1116,7 +1127,7 @@ private fun BookCarousel(
                     ly > y1 -> ly - y1
                     else -> 0f
                 }
-                val dist = kotlin.math.sqrt(ddx * ddx + ddy * ddy) + ad * 0.6f
+                val dist = kotlin.math.sqrt(ddx * ddx + ddy * ddy)
                 if (dist < nearDist && dist <= tol) {
                     nearBest = i
                     nearDist = dist
@@ -1184,7 +1195,10 @@ private fun BookCarousel(
                                             onOpen(books[idx])
                                         } else {
                                             Haptics.select(appCtx)
-                                            launchAnim { animatePosTo(pos + d) }
+                                            // 直接算目标槽位，一步滚过去。
+                                            // 以前是 pos + d（只走一格），点远处的书要连点好几下。
+                                            val target = pos + d
+                                            launchAnim { animatePosTo(target) }
                                         }
                                     }
                                 }

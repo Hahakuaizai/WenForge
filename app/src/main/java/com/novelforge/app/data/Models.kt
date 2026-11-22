@@ -151,10 +151,13 @@ data class AppSettings(
     /** 护眼强度 0..1（默认 0.18，很淡的暖黄） */
     var readerEyeCareStrength: Float = 0.18f,
     /**
-     * 每本书读到哪了。key = "kind:bookId"，value = 章序号。
-     * 章序号是「阅读器里的序号」（0 基），不是书里的章节号。
+     * 每本书读到哪了。key = "kind:bookId"，value = "章序号:章内位置"。
+     * 章序号是「阅读器里的序号」（0 基）；章内位置是 0..1 的比例，
+     * 滚动模式存 item 内的分数偏移，翻页模式存第几页的进度。
      */
     var readProgress: MutableMap<String, Int> = mutableMapOf(),
+    /** 章内位置（0..1），key 同 readProgress */
+    var readProgressFrac: MutableMap<String, Float> = mutableMapOf(),
     // —— 更新 ——
     /** 更新服务地址；默认走 adb reverse 的本机端口，接 WiFi 时可改成电脑局域网地址 */
     var updateServerUrl: String = "http://127.0.0.1:8787",
