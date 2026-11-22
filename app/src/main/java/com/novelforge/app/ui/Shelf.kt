@@ -1281,9 +1281,22 @@ private fun BookCarousel(
                     .width(bookBoxW)
                     .height(bookBoxH)
                     .graphicsLayer {
-                        val (x, y) = bookOrigin(i, pos, enter.value)
-                        translationX = x
-                        translationY = y
+                        // 热路径：每帧每本书都会跑这里。原来调用 bookOrigin 返回 Pair，
+                        // 每帧几十次堆分配 -> GC 尖峰掉帧。直接内联计算，零分配。
+                        val d = relOfStatic(i, pos, n)
+                        val ad = kotlin.math.abs(d)
+                        var w = wave(ad)
+                        var slide = 0f
+                        if (enter.value < 1.4f) {
+                            val lp = ((enter.value - i * 0.018f) / 0.52f).coerceIn(0f, 1f)
+                            val e = 1f - (1f - lp) * (1f - lp) * (1f - lp)
+                            slide = (1f - e) * slidePx
+                            w *= ((lp - 0.38f) / 0.62f).coerceIn(0f, 1f)
+                        }
+                        val pull = cover * 0.84f * w * (1.24f - 0.24f * w)
+                        val lift = w * w * (3f - 2f * w)
+                        translationX = startX + d * pitch - pull * 0.66f + slide * 0.66f
+                        translationY = baseY + railY(d) + 0.30f * pull - 0.60f * H * lift + slide * -0.30f
                         // 不要用 Offscreen：它会按 Box 尺寸建纹理，而书的内容
                         // （顶面斜出的角、封面左上的投影）会超出 Box 边界，
                         // 超出的部分直接被裁成一条直线，立体感全没了。
