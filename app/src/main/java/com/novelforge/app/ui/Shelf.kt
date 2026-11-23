@@ -32,6 +32,8 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
@@ -158,6 +160,7 @@ fun ShelfScreen(
     var showFilter by remember { mutableStateOf(false) }
     // 批量管理
     var manageOpen by remember { mutableStateOf(false) }
+    var gridView by rememberSaveable { mutableStateOf(false) }
 
     val novels = vm.data.projects.map {
         ShelfItem(
@@ -411,6 +414,15 @@ fun ShelfScreen(
                             style = TextStyle(fontSize = 13.sp, color = InkGray)
                         )
                         Spacer(Modifier.weight(1f))
+                        Box(
+                            Modifier.size(34.dp).clip(RoundedCornerShape(50)).clickable { showFilter = !showFilter },
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.Default.FilterList, contentDescription = "筛选", modifier = Modifier.size(20.dp), tint = if (showFilter) InkBlack else InkGray) }
+                        Spacer(Modifier.width(6.dp))
+                        Box(
+                            Modifier.size(34.dp).clip(RoundedCornerShape(50)).clickable { gridView = !gridView },
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.Default.Apps, contentDescription = "切换视图", modifier = Modifier.size(20.dp), tint = if (gridView) InkBlack else InkGray) }
                     }
 
                     // 横向展开的来源菜单
@@ -504,13 +516,30 @@ fun ShelfScreen(
             }
 
             item {
-                BookCarousel(
-                    books = shown,
-                    onOpen = { onOpen(it.kind, it.id, 0) },
-                    onLongClick = { menuFor = it },
-                    initialIndex = startIdx,
-                    onCurrentChange = { currentBook = it; shelfPrefs.edit().putString("lastBookId", it.id).apply() }
-                )
+                if (gridView) {
+                    val rows = (shown.size + 2) / 3
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        userScrollEnabled = false,
+                        modifier = Modifier.fillMaxWidth().height((rows * 210).dp).padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        items(shown, key = { it.id }) { bk ->
+                            SearchCoverCell(
+                                SearchCell("imported", bk.id, bk.title, bk.coverAuthor.ifBlank { "本地书籍" }, (kotlin.math.abs(bk.id.hashCode()) % 8), "WK-" + (kotlin.math.abs(bk.id.hashCode()) % 100000000))
+                            ) { onOpen(bk.kind, bk.id, 0) }
+                        }
+                    }
+                } else {
+                    BookCarousel(
+                        books = shown,
+                        onOpen = { onOpen(it.kind, it.id, 0) },
+                        onLongClick = { menuFor = it },
+                        initialIndex = startIdx,
+                        onCurrentChange = { currentBook = it; shelfPrefs.edit().putString("lastBookId", it.id).apply() }
+                    )
+                }
                 Spacer(Modifier.height(26.dp))
                 Box(
                     Modifier
