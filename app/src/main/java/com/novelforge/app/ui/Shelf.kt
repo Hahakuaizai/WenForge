@@ -2065,25 +2065,56 @@ private fun ShelfSearch(
             }
         }
 
-        val cells = remember(vm.data.projects.size, vm.data.importedBooks.size, query, mode) {
-            buildSearchCells(vm, query.trim(), mode)
-        }
-
-        if (query.isNotBlank() && cells.isEmpty()) {
-            Column(Modifier.fillMaxSize().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Spacer(Modifier.height(50.dp))
-                Text("没找到", style = TextStyle(fontSize = 13.sp, color = InkGray))
+        if (query.isNotBlank() && mode == "书中内容") {
+            val hits = remember(query) { searchAll(vm, query.trim(), mode) }
+            if (hits.isEmpty()) {
+                Column(Modifier.fillMaxSize().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Spacer(Modifier.height(50.dp))
+                    Text("没找到", style = TextStyle(fontSize = 13.sp, color = InkGray))
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 90.dp)) {
+                    item {
+                        Text("${hits.size} 条结果", style = TextStyle(fontSize = 11.sp, color = InkGray), modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 8.dp))
+                    }
+                    itemsIndexed(hits) { _, hit ->
+                        Column(Modifier.fillMaxWidth().clickable { keyboard?.hide(); onOpenHit(hit.kind, hit.bookId, hit.chapterIndex) }.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(hl(hit.bookTitle, query, Color(0xFF9A4A2F)), style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = InkBlack), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                                if (hit.chapterTitle.isNotBlank()) {
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(hl(hit.chapterTitle, query, Color(0xFF9A4A2F)), style = TextStyle(fontSize = 11.sp, color = InkGray), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                }
+                            }
+                            if (hit.snippet.isNotBlank()) {
+                                Spacer(Modifier.height(5.dp))
+                                Text(hl(hit.snippet, query, Color(0xFF9A4A2F)), style = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = InkGray), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        Box(Modifier.fillMaxWidth().padding(start = 20.dp).height(1.dp).background(HairLine.copy(alpha = 0.6f)))
+                    }
+                }
             }
         } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 90.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                items(cells, key = { it.kind + it.id }) { c ->
-                    SearchCoverCell(c) { keyboard?.hide(); onOpenHit(c.kind, c.id, 0) }
+            val cells = remember(vm.data.projects.size, vm.data.importedBooks.size, query, mode) {
+                buildSearchCells(vm, query.trim(), mode)
+            }
+            if (query.isNotBlank() && cells.isEmpty()) {
+                Column(Modifier.fillMaxSize().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Spacer(Modifier.height(50.dp))
+                    Text("没找到", style = TextStyle(fontSize = 13.sp, color = InkGray))
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 90.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    items(cells, key = { it.kind + it.id }) { c ->
+                        SearchCoverCell(c) { keyboard?.hide(); onOpenHit(c.kind, c.id, 0) }
+                    }
                 }
             }
         }
