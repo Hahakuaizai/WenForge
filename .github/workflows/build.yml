@@ -22,7 +22,22 @@ jobs:
             "$CMD/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools" >/dev/null 2>&1 || true
           fi
           chmod +x ./gradlew
+          # 签名：从 GitHub Secrets 还原 keystore 和密码。
+          # 没有 Secrets 时会退回 debug 签名（照样能装，但装不上已发布的版本）。
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            mkdir -p keystore
+            echo "$KEYSTORE_BASE64" | base64 -d > keystore/wenforge.p12
+            { echo "storePassword=$KEYSTORE_PASSWORD"; echo "keyAlias=$KEYSTORE_ALIAS"; echo "keyPassword=$KEY_PASSWORD"; } > keystore/keystore.properties
+            echo "keystore 已还原"
+          else
+            echo "::warning::没配 KEYSTORE_BASE64，本次用 debug 签名"
+          fi
           ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

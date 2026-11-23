@@ -1,3 +1,4 @@
+import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,15 +18,29 @@ android {
         versionName = "0.4.60"
     }
 
+    // 签名密码不写死在仓库里（仓库是公开的，硬编码等于公开密钥）。
+    // 本地：keystore/keystore.properties（.gitignore 已挡）
+    // CI  ：GitHub Secrets → 环境变量
+    val keystoreProps = Properties().apply {
+        val f = rootProject.file("keystore/keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    fun secret(key: String, env: String): String? =
+        (keystoreProps.getProperty(key) ?: System.getenv(env))?.takeIf { it.isNotBlank() }
+
     signingConfigs {
         create("fixed") {
-            storeFile = rootProject.file("keystore/wenforge.p12")
-            storePassword = "wenforge_ks_2026"
-            keyAlias = "wenforge"
-            keyPassword = "wenforge_ks_2026"
-            storeType = "PKCS12"
-            enableV1Signing = true
-            enableV2Signing = true
+            val ksPath = rootProject.file("keystore/wenforge.p12")
+            // keystore 文件也不进仓库；本地缺了就退回 debug 签名，照样能装
+            if (ksPath.exists()) {
+                storeFile = ksPath
+                storePassword = secret("storePassword", "KEYSTORE_PASSWORD")
+                keyAlias = secret("keyAlias", "KEYSTORE_ALIAS") ?: "wenforge"
+                keyPassword = secret("keyPassword", "KEY_PASSWORD")
+                storeType = "PKCS12"
+                enableV1Signing = true
+                enableV2Signing = true
+            }
         }
     }
     buildTypes {
