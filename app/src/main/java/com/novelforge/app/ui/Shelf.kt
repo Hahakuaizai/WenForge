@@ -2073,25 +2073,33 @@ private fun ShelfSearch(
                     Text("没找到", style = TextStyle(fontSize = 13.sp, color = InkGray))
                 }
             } else {
+                val grouped = remember(hits) { hits.groupBy { it.kind + "|" + it.bookId } }
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 90.dp)) {
                     item {
-                        Text("${hits.size} 条结果", style = TextStyle(fontSize = 11.sp, color = InkGray), modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 8.dp))
+                        Text("${hits.size} 处命中 · ${grouped.size} 本书", style = TextStyle(fontSize = 11.sp, color = InkGray), modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp))
                     }
-                    itemsIndexed(hits) { _, hit ->
-                        Column(Modifier.fillMaxWidth().clickable { keyboard?.hide(); onOpenHit(hit.kind, hit.bookId, hit.chapterIndex) }.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(hl(hit.bookTitle, query, Color(0xFF9A4A2F)), style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = InkBlack), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                                if (hit.chapterTitle.isNotBlank()) {
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(hl(hit.chapterTitle, query, Color(0xFF9A4A2F)), style = TextStyle(fontSize = 11.sp, color = InkGray), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                }
-                            }
-                            if (hit.snippet.isNotBlank()) {
-                                Spacer(Modifier.height(5.dp))
-                                Text(hl(hit.snippet, query, Color(0xFF9A4A2F)), style = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = InkGray), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    grouped.forEach { (_, list) ->
+                        val head = list.first()
+                        item {
+                            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(head.bookTitle, style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Bold, color = InkBlack), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                Text("共 " + list.size + " 处", style = TextStyle(fontSize = 11.sp, color = InkGray))
                             }
                         }
-                        Box(Modifier.fillMaxWidth().padding(start = 20.dp).height(1.dp).background(HairLine.copy(alpha = 0.6f)))
+                        itemsIndexed(list) { _, hit ->
+                            Row(Modifier.fillMaxWidth().clickable { keyboard?.hide(); onOpenHit(hit.kind, hit.bookId, hit.chapterIndex) }.padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.Top) {
+                                Text("›", style = TextStyle(fontSize = 16.sp, color = InkGray), modifier = Modifier.padding(top = 1.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(hl(if (hit.chapterTitle.isBlank()) "第" + (hit.chapterIndex + 1) + "章" else hit.chapterTitle, query, Color(0xFF9A4A2F)), style = TextStyle(fontSize = 12.sp, color = InkBlack, fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    if (hit.snippet.isNotBlank()) {
+                                        Spacer(Modifier.height(3.dp))
+                                        Text(hl(hit.snippet, query, Color(0xFF9A4A2F)), style = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = InkGray), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
+                            Box(Modifier.fillMaxWidth().padding(start = 20.dp).height(1.dp).background(HairLine.copy(alpha = 0.6f)))
+                        }
                     }
                 }
             }
