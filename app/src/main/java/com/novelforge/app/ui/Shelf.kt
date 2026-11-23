@@ -67,6 +67,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.mutableFloatStateOf
@@ -1969,35 +1972,13 @@ private fun ShelfSearch(
     var query by rememberSaveable { mutableStateOf("") }
     var mode by rememberSaveable { mutableStateOf("书名") }
     val modes = listOf("书名", "作者", "标签", "ID", "书中内容")
-    var hits by remember { mutableStateOf<List<SearchHit>>(emptyList()) }
-    var running by remember { mutableStateOf(false) }
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        focus.requestFocus()
-    }
-
-    androidx.compose.runtime.LaunchedEffect(query, mode) {
-        if (query.isBlank()) {
-            hits = emptyList()
-            running = false
-            return@LaunchedEffect
-        }
-        running = true
-        kotlinx.coroutines.delay(220)
-        hits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            searchAll(vm, query.trim(), mode)
-        }
-        running = false
-    }
+    androidx.compose.runtime.LaunchedEffect(Unit) { focus.requestFocus() }
 
     Column(Modifier.fillMaxSize().background(PaperWhite)) {
-        // 搜索框
         Row(
-            Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
+            Modifier.fillMaxWidth().statusBarsPadding()
                 .padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -2007,9 +1988,7 @@ private fun ShelfSearch(
                 singleLine = true,
                 textStyle = TextStyle(fontSize = 16.sp, color = InkBlack),
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(InkBlack),
-                modifier = Modifier
-                    .weight(1f)
-                    .focusRequester(focus),
+                modifier = Modifier.weight(1f).focusRequester(focus),
                 decorationBox = { inner ->
                     Box {
                         if (query.isEmpty()) {
@@ -2029,173 +2008,119 @@ private fun ShelfSearch(
                 }
             )
             if (query.isNotEmpty()) {
-                Text(
-                    "清除",
-                    style = TextStyle(fontSize = 12.sp, color = InkGray),
-                    modifier = Modifier
-                        .clickable { query = "" }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                )
+                Text("清除", style = TextStyle(fontSize = 12.sp, color = InkGray),
+                    modifier = Modifier.clickable { query = "" }.padding(horizontal = 10.dp, vertical = 6.dp))
             }
-            Text(
-                "取消",
-                style = TextStyle(fontSize = 14.sp, color = InkBlack),
-                modifier = Modifier
-                    .clickable {
-                        keyboard?.hide()
-                        onClose()
-                    }
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
-            )
+            Text("取消", style = TextStyle(fontSize = 14.sp, color = InkBlack),
+                modifier = Modifier.clickable { keyboard?.hide(); onClose() }.padding(horizontal = 8.dp, vertical = 6.dp))
         }
+        Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(1.dp).background(HairLine))
 
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .height(1.dp)
-                .background(HairLine)
-        )
-
-        // 搜索维度切换（分段控件）
         Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             modes.forEach { m ->
                 val selected = m == mode
                 Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
+                    Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
                         .background(if (selected) InkBlack else Color.White)
                         .clickable { mode = m }
                         .padding(vertical = 9.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        m,
-                        style = TextStyle(
-                            fontSize = 12.5.sp,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selected) Color.White else InkGray
-                        )
-                    )
+                    Text(m, style = TextStyle(fontSize = 12.5.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (selected) Color.White else InkGray))
                 }
             }
         }
 
-        when {
-            query.isBlank() -> {
-                Column(
-                    Modifier.fillMaxSize().padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Spacer(Modifier.height(50.dp))
-                    Text(
-                        "输入关键词",
-                        style = TextStyle(fontSize = 13.sp, color = InkGray)
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "搜书名、章节名和正文；命中的词会标出来",
-                        style = TextStyle(fontSize = 11.sp, color = InkGray.copy(alpha = 0.7f)),
-                        textAlign = TextAlign.Center
-                    )
-                }
+        val cells = remember(vm.data.projects.size, vm.data.importedBooks.size, query, mode) {
+            buildSearchCells(vm, query.trim(), mode)
+        }
+
+        if (query.isNotBlank() && cells.isEmpty()) {
+            Column(Modifier.fillMaxSize().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.height(50.dp))
+                Text("没找到", style = TextStyle(fontSize = 13.sp, color = InkGray))
             }
-            running && hits.isEmpty() -> {
-                Column(
-                    Modifier.fillMaxSize().padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Spacer(Modifier.height(50.dp))
-                    Text("搜索中…", style = TextStyle(fontSize = 13.sp, color = InkGray))
-                }
-            }
-            hits.isEmpty() -> {
-                Column(
-                    Modifier.fillMaxSize().padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Spacer(Modifier.height(50.dp))
-                    Text("没找到", style = TextStyle(fontSize = 13.sp, color = InkGray))
-                }
-            }
-            else -> {
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 90.dp)
-                ) {
-                    item {
-                        Text(
-                            "${hits.size} 条结果",
-                            style = TextStyle(fontSize = 11.sp, color = InkGray),
-                            modifier = Modifier.padding(start = 22.dp, top = 14.dp, bottom = 6.dp)
-                        )
-                    }
-                    itemsIndexed(hits) { _, hit ->
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    keyboard?.hide()
-                                    onOpenHit(hit.kind, hit.bookId, hit.chapterIndex)
-                                }
-                                .padding(horizontal = 18.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            val hue = (kotlin.math.abs(hit.bookId.hashCode()) % 360).toFloat()
-                            Box(
-                                Modifier
-                                    .size(48.dp, 62.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color.hsl(hue, 0.30f, 0.60f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    hit.bookTitle.take(2),
-                                    style = TextStyle(fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold),
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 2
-                                )
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    "WK-" + (kotlin.math.abs(hit.bookId.hashCode()) % 100000000),
-                                    style = TextStyle(fontSize = 10.sp, color = InkGray, letterSpacing = 0.5.sp)
-                                )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    hl(hit.bookTitle, query, Color(0xFF9A4A2F)),
-                                    style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = InkBlack),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(Modifier.height(3.dp))
-                                Text(
-                                    hl(if (hit.snippet.isNotBlank()) hit.snippet else (if (hit.kind == "imported") "本地书籍" else "我的创作"), query, Color(0xFF9A4A2F)),
-                                    style = TextStyle(fontSize = 11.5.sp, color = InkGray),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Text("›", style = TextStyle(fontSize = 20.sp, color = InkGray))
-                        }
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(start = 18.dp)
-                                .height(1.dp)
-                                .background(HairLine.copy(alpha = 0.6f))
-                        )
-                    }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 90.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                items(cells, key = { it.kind + it.id }) { c ->
+                    SearchCoverCell(c) { keyboard?.hide(); onOpenHit(c.kind, c.id, 0) }
                 }
             }
         }
+    }
+}
+
+private data class SearchCell(val kind: String, val id: String, val title: String, val author: String, val hue: Int, val serial: String)
+
+private fun buildSearchCells(vm: AppViewModel, q: String, mode: String): List<SearchCell> {
+    val needle = q.lowercase()
+    fun hueOf(s: String) = kotlin.math.abs(s.hashCode()) % 360
+    fun serialOf(id: String) = "WK-" + (kotlin.math.abs(id.hashCode()) % 100000000)
+    val out = mutableListOf<SearchCell>()
+    val projects = vm.data.projects.toList()
+    val books = vm.data.importedBooks.toList()
+    if (needle.isBlank()) {
+        projects.forEach { p -> out.add(SearchCell("novel", p.id, p.title, "我的创作", hueOf(p.id), serialOf(p.id))) }
+        books.forEach { b -> out.add(SearchCell("imported", b.id, b.title, b.author.ifBlank { "本地书籍" }, hueOf(b.id), serialOf(b.id))) }
+        return out
+    }
+    projects.forEach { p ->
+        val ok = when (mode) {
+            "书名" -> p.title.lowercase().contains(needle)
+            "标签" -> p.genre.lowercase().contains(needle)
+            "ID" -> serialOf(p.id).lowercase().contains(needle) || p.id.lowercase().contains(needle)
+            "书中内容" -> p.chapters.any { it.title.lowercase().contains(needle) || it.content.lowercase().contains(needle) }
+            else -> false
+        }
+        if (ok) out.add(SearchCell("novel", p.id, p.title, "我的创作", hueOf(p.id), serialOf(p.id)))
+    }
+    books.forEach { b ->
+        val typeLabel = if (b.origin == "crawl") "网文" else "本地书籍"
+        val ok = when (mode) {
+            "书名" -> b.title.lowercase().contains(needle)
+            "作者" -> b.author.lowercase().contains(needle)
+            "标签" -> typeLabel.contains(needle)
+            "ID" -> serialOf(b.id).lowercase().contains(needle) || b.id.lowercase().contains(needle)
+            "书中内容" -> b.chapters.any { it.title.lowercase().contains(needle) || it.content.lowercase().contains(needle) }
+            else -> false
+        }
+        if (ok) out.add(SearchCell("imported", b.id, b.title, b.author.ifBlank { typeLabel }, hueOf(b.id), serialOf(b.id)))
+    }
+    return out
+}
+
+@Composable
+private fun SearchCoverCell(c: SearchCell, onClick: () -> Unit) {
+    val palette = longArrayOf(0xFF8E7CC3, 0xFF6AA84F, 0xFFC27BA0, 0xFFE69138, 0xFF674EA7, 0xFF45818E, 0xFFA64D79, 0xFFB45F06)
+    val col = Color(palette[((c.hue % palette.size) + palette.size) % palette.size])
+    Column(Modifier.clickable { onClick() }) {
+        Box(
+            Modifier.fillMaxWidth().height(150.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(col)
+        ) {
+            Text("VOL.1", style = TextStyle(fontSize = 7.sp, color = Color.White.copy(alpha = 0.85f)),
+                modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
+            Text(c.title, style = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White),
+                maxLines = 3, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 8.dp))
+            Text(c.serial, style = TextStyle(fontSize = 7.sp, color = Color.White.copy(alpha = 0.8f)),
+                modifier = Modifier.align(Alignment.BottomStart).padding(6.dp))
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(c.title, style = TextStyle(fontSize = 11.sp, color = InkBlack), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(c.author, style = TextStyle(fontSize = 9.sp, color = InkGray), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
