@@ -1291,8 +1291,11 @@ private fun BookCarousel(
                     spinePx = spine, coverPx = cover, hPx = H, density = density)
                 val bw = pic.width.coerceAtLeast(1)
                 val bh = pic.height.coerceAtLeast(1)
-                val bmp = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
-                android.graphics.Canvas(bmp).drawPicture(pic)
+                val soft = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
+                android.graphics.Canvas(soft).drawPicture(pic)
+                // 转 HARDWARE 位图: 绘制时直接当 GPU 纹理, CPU 不参与像素合成, 降低主线程负载
+                val bmp = soft.copy(android.graphics.Bitmap.Config.HARDWARE, false) ?: soft
+                if (bmp !== soft) soft.recycle()
                 bmp
             }
         }
