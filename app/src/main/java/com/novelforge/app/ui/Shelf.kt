@@ -1298,7 +1298,7 @@ private fun BookCarousel(
                 val lift = w * w * (3f - 2f * w)
                 val x = startX + d * pitch - pull * 0.66f + slide * 0.66f
                 val y = baseY + railY(d) + 0.30f * pull - 0.60f * H * lift + slide * -0.30f
-                nc.save(); nc.translate(x, y); nc.drawPicture(pic); nc.restore()
+                nc.save(); nc.translate(x - 60f, y - (cover * 0.30f + 60f)); nc.drawPicture(pic); nc.restore()
             }
         }
     }
@@ -1770,7 +1770,12 @@ private fun recordBookPicture(
     density: androidx.compose.ui.unit.Density
 ): android.graphics.Picture {
     val pic = android.graphics.Picture()
-    val c = android.graphics.Canvas(pic)
+    val PAD = 60f
+    val PAD_TOP = coverPx * 0.30f + 60f
+    val recW = (spinePx + coverPx * 0.66f + PAD * 2f + 40f).toInt().coerceAtLeast(1)
+    val recH = (hPx + coverPx * 0.60f + PAD_TOP + 60f).toInt().coerceAtLeast(1)
+    val c = pic.beginRecording(recW, recH)
+    c.translate(PAD, PAD_TOP)
     val fills = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
     val stroke = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.STROKE }
     val mono = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.MONOSPACE }
@@ -1893,6 +1898,7 @@ private fun recordBookPicture(
     val r = with(density) { 1.75.dp.toPx() }
     fills.shader = null; fills.color = android.graphics.Color.rgb(0xB9, 0xB0, 0x9A)
     c.drawCircle(spineCx, hPx - padV - r, r, fills)
+    pic.endRecording()
     return pic
 }
 
