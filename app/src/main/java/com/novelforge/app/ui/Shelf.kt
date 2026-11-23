@@ -1293,7 +1293,6 @@ private fun BookCarousel(
                 val bh = pic.height.coerceAtLeast(1)
                 val bmp = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
                 android.graphics.Canvas(bmp).drawPicture(pic)
-                pic.close()
                 bmp
             }
         }
