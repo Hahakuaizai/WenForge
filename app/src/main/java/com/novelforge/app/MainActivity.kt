@@ -134,20 +134,22 @@ class MainActivity : ComponentActivity() {
                         navController = nav,
                         startDestination = "main",
                         enterTransition = {
-                            fadeIn(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
-                                slideInHorizontally(tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it / 4 }
+                            fadeIn(tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                                androidx.compose.animation.scaleIn(tween(340, easing = androidx.compose.animation.core.FastOutSlowInEasing), initialScale = 0.92f) +
+                                androidx.compose.animation.slideInVertically(tween(340, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it / 16 }
                         },
                         exitTransition = {
                             fadeOut(tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
-                                slideOutHorizontally(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it / 10 }
+                                androidx.compose.animation.scaleOut(tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing), targetScale = 1.03f)
                         },
                         popEnterTransition = {
-                            fadeIn(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
-                                slideInHorizontally(tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it / 4 }
+                            fadeIn(tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                                androidx.compose.animation.scaleIn(tween(340, easing = androidx.compose.animation.core.FastOutSlowInEasing), initialScale = 1.03f) +
+                                androidx.compose.animation.slideInVertically(tween(340, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it / 16 }
                         },
                         popExitTransition = {
                             fadeOut(tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
-                                slideOutHorizontally(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it / 10 }
+                                androidx.compose.animation.scaleOut(tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing), targetScale = 0.92f)
                         }
                     ) {
                         composable("main") {

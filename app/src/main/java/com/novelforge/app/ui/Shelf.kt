@@ -204,15 +204,15 @@ fun ShelfScreen(
     androidx.compose.animation.AnimatedVisibility(
         visible = searchOpen,
         enter = androidx.compose.animation.fadeIn(
-            androidx.compose.animation.core.tween(220)
-        ) + androidx.compose.animation.slideInVertically(
-            androidx.compose.animation.core.tween(300)
-        ) { it / 8 },
+            androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+        ) + androidx.compose.animation.scaleIn(
+            androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing), initialScale = 0.96f
+        ),
         exit = androidx.compose.animation.fadeOut(
-            androidx.compose.animation.core.tween(160)
-        ) + androidx.compose.animation.slideOutVertically(
-            androidx.compose.animation.core.tween(220)
-        ) { it / 12 },
+            androidx.compose.animation.core.tween(180)
+        ) + androidx.compose.animation.scaleOut(
+            androidx.compose.animation.core.tween(240), targetScale = 1.02f
+        ),
         modifier = Modifier.fillMaxSize()
     ) {
         ShelfSearch(
@@ -1256,7 +1256,11 @@ private fun BookCarousel(
             val dCenter = relOfStatic(centerIdx, pos, n)
             val fade = (1f - kotlin.math.abs(dCenter) * 0.7f).coerceIn(0f, 1f)
             if (fade > 0.02f) {
-                val cx = shadowCx + dCenter * pitch
+                // 影子横向要跟着「抽出来的那本」的位移走：书被 pull 向左前移了 pullC*0.66，
+                // 之前影子没跟着移，结果画到了右边那本下面（选中书自己反而没影子）。
+                val wC = wave(kotlin.math.abs(dCenter))
+                val pullC = cover * 0.84f * wC * (1.24f - 0.24f * wC)
+                val cx = shadowCx + dCenter * pitch - pullC * 0.66f
                 val cy = shadowCy + railY(dCenter)
                 // 渐变单位圆 → 椭圆：x 放大 rx、y 放大 ry
                 shadowMatrix.setScale(shadowRx, shadowRy)
