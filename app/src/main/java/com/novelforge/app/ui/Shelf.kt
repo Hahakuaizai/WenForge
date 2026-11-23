@@ -2113,15 +2113,12 @@ private fun ShelfSearch(
                     Text("没找到", style = TextStyle(fontSize = 13.sp, color = InkGray))
                 }
             } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
+                LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 90.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    contentPadding = PaddingValues(top = 6.dp, bottom = 90.dp)
                 ) {
                     items(cells, key = { it.kind + it.id }) { c ->
-                        SearchCoverCell(c) { keyboard?.hide(); onOpenHit(c.kind, c.id, 0) }
+                        SearchRow(c) { keyboard?.hide(); onOpenHit(c.kind, c.id, 0) }
                     }
                 }
             }
@@ -2189,6 +2186,40 @@ private fun SearchCoverCell(c: SearchCell, onClick: () -> Unit) {
         Spacer(Modifier.height(5.dp))
         Text(c.title, style = TextStyle(fontSize = 11.sp, color = InkBlack), maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(c.author, style = TextStyle(fontSize = 9.sp, color = InkGray), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** 单列行式：每本书一行，左侧竖版平面封面，右侧书名/作者/编号 */
+@Composable
+private fun SearchRow(c: SearchCell, onClick: () -> Unit) {
+    val palette = longArrayOf(0xFF8E7CC3, 0xFF6AA84F, 0xFFC27BA0, 0xFFE69138, 0xFF674EA7, 0xFF45818E, 0xFFA64D79, 0xFFB45F06)
+    val col = Color(palette[((c.hue % palette.size) + palette.size) % palette.size])
+    Column(Modifier.fillMaxWidth().clickable { onClick() }) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier.width(88.dp).height(124.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(col)
+            ) {
+                Text("VOL.1", style = TextStyle(fontSize = 7.sp, color = Color.White.copy(alpha = 0.85f)), modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
+                Text(c.title, style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White), maxLines = 3, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.Center).padding(horizontal = 6.dp))
+                Text(c.serial, style = TextStyle(fontSize = 7.sp, color = Color.White.copy(alpha = 0.8f)), modifier = Modifier.align(Alignment.BottomStart).padding(6.dp))
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(c.title, style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = InkBlack), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(5.dp))
+                Text(c.author, style = TextStyle(fontSize = 12.sp, color = InkGray), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(3.dp))
+                Text(c.serial, style = TextStyle(fontSize = 10.sp, color = InkGray.copy(alpha = 0.7f)), maxLines = 1)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("›", style = TextStyle(fontSize = 18.sp, color = InkGray))
+        }
+        Box(Modifier.fillMaxWidth().padding(start = 20.dp).height(1.dp).background(HairLine.copy(alpha = 0.6f)))
     }
 }
 
