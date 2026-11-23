@@ -134,16 +134,20 @@ class MainActivity : ComponentActivity() {
                         navController = nav,
                         startDestination = "main",
                         enterTransition = {
-                            fadeIn(tween(240)) + slideInHorizontally(tween(300)) { it / 6 }
+                            fadeIn(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                                slideInHorizontally(tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it / 4 }
                         },
                         exitTransition = {
-                            fadeOut(tween(170)) + slideOutHorizontally(tween(280)) { -it / 14 }
+                            fadeOut(tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                                slideOutHorizontally(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it / 10 }
                         },
                         popEnterTransition = {
-                            fadeIn(tween(240)) + slideInHorizontally(tween(300)) { -it / 6 }
+                            fadeIn(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                                slideInHorizontally(tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it / 4 }
                         },
                         popExitTransition = {
-                            fadeOut(tween(170)) + slideOutHorizontally(tween(280)) { it / 14 }
+                            fadeOut(tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                                slideOutHorizontally(tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it / 10 }
                         }
                     ) {
                         composable("main") {

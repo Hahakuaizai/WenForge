@@ -100,15 +100,15 @@ fun MainTabsScreen(
                 transitionSpec = {
                     val dir = if (forward) 1 else -1
                     (androidx.compose.animation.fadeIn(
-                        androidx.compose.animation.core.tween(240)
+                        androidx.compose.animation.core.tween(260, easing = androidx.compose.animation.core.FastOutSlowInEasing)
                     ) + androidx.compose.animation.slideInHorizontally(
-                        androidx.compose.animation.core.tween(300)
-                    ) { w -> dir * w / 10 }) togetherWith
+                        androidx.compose.animation.core.tween(340, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                    ) { w -> dir * w / 6 }) togetherWith
                         (androidx.compose.animation.fadeOut(
-                            androidx.compose.animation.core.tween(160)
+                            androidx.compose.animation.core.tween(200)
                         ) + androidx.compose.animation.slideOutHorizontally(
-                            androidx.compose.animation.core.tween(240)
-                        ) { w -> -dir * w / 16 })
+                            androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                        ) { w -> -dir * w / 9 })
                 },
                 label = "tabSwitch",
                 modifier = Modifier.fillMaxSize()

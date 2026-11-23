@@ -190,6 +190,14 @@ fun ShelfScreen(
         else -> all
     }
 
+    // 记住上次停在的那本书：退出重进时不再是 01，而是上次那本
+    val shelfCtx = androidx.compose.ui.platform.LocalContext.current
+    val shelfPrefs = remember { shelfCtx.getSharedPreferences("wf_shelf", android.content.Context.MODE_PRIVATE) }
+    val startIdx = remember(shown) {
+        val lastId = shelfPrefs.getString("lastBookId", "")
+        shown.indexOfFirst { it.id == lastId }.coerceAtLeast(0)
+    }
+
     // 搜索界面按返回键 / 侧滑：回书架首页，不退出应用
     androidx.activity.compose.BackHandler(enabled = searchOpen) { searchOpen = false }
 
@@ -507,7 +515,8 @@ fun ShelfScreen(
                     books = shown,
                     onOpen = { onOpen(it.kind, it.id, 0) },
                     onLongClick = { menuFor = it },
-                    onCurrentChange = { currentBook = it }
+                    initialIndex = startIdx,
+                    onCurrentChange = { currentBook = it; shelfPrefs.edit().putString("lastBookId", it.id).apply() }
                 )
                 Spacer(Modifier.height(26.dp))
                 Box(
@@ -942,6 +951,7 @@ private fun BookCarousel(
     books: List<ShelfItem>,
     onOpen: (ShelfItem) -> Unit,
     onLongClick: (ShelfItem) -> Unit,
+    initialIndex: Int = 0,
     onCurrentChange: (ShelfItem) -> Unit = {}
 ) {
     val n = books.size
@@ -951,7 +961,7 @@ private fun BookCarousel(
     val density = androidx.compose.ui.platform.LocalDensity.current
 
     // 位置以「书槽」为单位，pos 是浮点索引（可无限增长，relOf 里取模绕回）
-    var pos by remember(n) { mutableFloatStateOf(0f) }
+    var pos by remember(n, initialIndex) { mutableFloatStateOf(initialIndex.toFloat()) }
     var dragging by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var animJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -1220,9 +1230,9 @@ private fun BookCarousel(
         // 最终：用原生 android.graphics.RadialGradient + Matrix 做椭圆缩放，
         // 渐变真的从中心往外淡出。每帧只画 1 个椭圆，开销可忽略。
         val shadowCx = startX + cover * 0.33f + spine * 0.5f
-        val shadowCy = baseY + H + cover * 0.045f
-        val shadowRx = (spine + cover * 0.66f) * 0.80f
-        val shadowRy = cover * 0.14f
+        val shadowCy = baseY + H + cover * 0.010f
+        val shadowRx = (spine + cover * 0.66f) * 0.94f
+        val shadowRy = cover * 0.21f
         // 原生 paint 只建一次，Matrix 每次改
         // 注意：渐变里的 alpha 和 paint.alpha 会相乘。这里渐变给足（中心 0.22），
         // paint.alpha 只用来做「拖远淡出」，不参与基础浓度。
@@ -1231,11 +1241,11 @@ private fun BookCarousel(
                 shader = android.graphics.RadialGradient(
                     0f, 0f, 1f,
                     intArrayOf(
-                        android.graphics.Color.argb(96, 0x2B, 0x28, 0x22),
-                        android.graphics.Color.argb(42, 0x2B, 0x28, 0x22),
+                        android.graphics.Color.argb(72, 0x2B, 0x28, 0x22),
+                        android.graphics.Color.argb(28, 0x2B, 0x28, 0x22),
                         android.graphics.Color.argb(0, 0x2B, 0x28, 0x22)
                     ),
-                    floatArrayOf(0f, 0.45f, 1f),
+                    floatArrayOf(0f, 0.32f, 1f),
                     android.graphics.Shader.TileMode.CLAMP
                 )
             }
