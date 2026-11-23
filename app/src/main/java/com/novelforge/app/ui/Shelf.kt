@@ -1266,60 +1266,39 @@ private fun BookCarousel(
         // 流畅度关键：每本书渲染成一个图层（内容不变就不重绘），位置在绘制期用
         // graphicsLayer 平移 —— 滑动时只动图层，不再每帧给几十本书重新布局+重绘封面。
         // 绘制序按整数槽位算（跨槽才变），精确位置在图层里读实时 pos。
-        val slotPos by remember(n) { derivedStateOf { pos.roundToInt().toFloat() } }
-        val order = books.indices
-            .filter { kotlin.math.abs(relOfStatic(it, slotPos, n)) <= rangeF + 1f }
-            .sortedBy { relOfStatic(it, slotPos, n) }
-        val bookBoxW = with(density) { (spine + cover * 0.66f).toDp() }
-        // 盒子要装得下「顶面斜出的角 + 整本书 + 底部留白」，太紧会被 Offscreen 图层裁掉
-        val topPadPx = cover * 0.30f + 10f
-        val bookBoxH = with(density) { (H + cover * 0.60f + 20f + topPadPx).toDp() }
-        order.forEach { i ->
-            val book = books[i]
-
-            Box(
-                Modifier
-                    .width(bookBoxW)
-                    .height(bookBoxH)
-                    .graphicsLayer {
-                        // 热路径：每帧每本书都会跑这里。原来调用 bookOrigin 返回 Pair，
-                        // 每帧几十次堆分配 -> GC 尖峰掉帧。直接内联计算，零分配。
-                        val d = relOfStatic(i, pos, n)
-                        val ad = kotlin.math.abs(d)
-                        var w = wave(ad)
-                        var slide = 0f
-                        if (enter.value < 1.4f) {
-                            val lp = ((enter.value - i * 0.018f) / 0.52f).coerceIn(0f, 1f)
-                            val e = 1f - (1f - lp) * (1f - lp) * (1f - lp)
-                            slide = (1f - e) * slidePx
-                            w *= ((lp - 0.38f) / 0.62f).coerceIn(0f, 1f)
-                        }
-                        val pull = cover * 0.84f * w * (1.24f - 0.24f * w)
-                        val lift = w * w * (3f - 2f * w)
-                        translationX = startX + d * pitch - pull * 0.66f + slide * 0.66f
-                        translationY = baseY + railY(d) + 0.30f * pull - 0.60f * H * lift + slide * -0.30f - topPadPx
-                        // 内容已在 BookSolid 里整体下移 topPad，这里上移补偿，视觉位置不变。
-                        // 强制离屏缓存：滑动每帧只更新这块缓存的变换矩阵，不重跑内容绘制
-                        // （对齐 Flutter 的 TransformLayer + oldLayer 复用）。
-                        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
-                    }
-            ) {
-                // key() 隔离：书的内容跟 pos 无关，滑动时 Compose 会跳过这棵子树的重组
-                // （对应 Flutter 版的 RepaintBoundary —— 位置在变、内容不重画）
-                androidx.compose.runtime.key(book.id) {
-                    BookSolid(
-                        title = book.title,
-                        no = i + 1,
-                        hue = book.hue,
-                        badge = book.badge,
-                        coverAuthor = book.coverAuthor,
-                        statusText = book.statusText,
-                        serial = "WK-${kotlin.math.abs(book.id.hashCode()) % 100000000}",
-                        spinePx = spine,
-                        coverPx = cover,
-                        hPx = H
-                    )
+        // 每本书的封面/书脊/文字预录成一个 android Picture（矢量绘制命令缓存）。
+        // 滑动时只在 draw 阶段把这些 Picture 平移贴上去，不重组、不重跑绘制逻辑。
+        val bookPics = remember(books, spine, cover, H) {
+            books.mapIndexed { idx, bk -> recordBookPicture(
+                title = bk.title, no = idx + 1, hue = bk.hue, badge = bk.badge,
+                coverAuthor = bk.coverAuthor, statusText = bk.statusText,
+                serial = "WK-${kotlin.math.abs(bk.id.hashCode()) % 100000000}",
+                spinePx = spine, coverPx = cover, hPx = H, density = density) }
+        }
+        Canvas(Modifier.fillMaxWidth().height(boxH)) {
+            val nc = drawContext.canvas.nativeCanvas
+            val p = pos
+            val enterV = enter.value
+            val visOrder = books.indices
+                .filter { kotlin.math.abs(relOfStatic(it, p, n)) <= rangeF + 1f }
+                .sortedBy { relOfStatic(it, p, n) }
+            for (i in visOrder) {
+                val pic = bookPics[i]
+                val d = relOfStatic(i, p, n)
+                val ad = kotlin.math.abs(d)
+                var w = wave(ad)
+                var slide = 0f
+                if (enterV < 1.4f) {
+                    val lp = ((enterV - i * 0.018f) / 0.52f).coerceIn(0f, 1f)
+                    val e = 1f - (1f - lp) * (1f - lp) * (1f - lp)
+                    slide = (1f - e) * slidePx
+                    w *= ((lp - 0.38f) / 0.62f).coerceIn(0f, 1f)
                 }
+                val pull = cover * 0.84f * w * (1.24f - 0.24f * w)
+                val lift = w * w * (3f - 2f * w)
+                val x = startX + d * pitch - pull * 0.66f + slide * 0.66f
+                val y = baseY + railY(d) + 0.30f * pull - 0.60f * H * lift + slide * -0.30f
+                nc.save(); nc.translate(x, y); nc.drawPicture(pic); nc.restore()
             }
         }
     }
@@ -1781,6 +1760,140 @@ private fun BookSolid(
             )
         }
     }
+}
+
+
+private fun recordBookPicture(
+    title: String, no: Int, hue: Int, badge: String,
+    coverAuthor: String, statusText: String, serial: String,
+    spinePx: Float, coverPx: Float, hPx: Float,
+    density: androidx.compose.ui.unit.Density
+): android.graphics.Picture {
+    val pic = android.graphics.Picture()
+    val c = android.graphics.Canvas(pic)
+    val fills = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    val stroke = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.STROKE }
+    val mono = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.MONOSPACE }
+    val serif = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.create(android.graphics.Typeface.SERIF, android.graphics.Typeface.BOLD) }
+    val serifPlain = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { typeface = android.graphics.Typeface.SERIF }
+
+    val dx = coverPx * 0.66f
+    val dy = coverPx * -0.30f
+    val skew = spinePx * 0.1f
+
+    // 顶面（书页）
+    val top = android.graphics.Path().apply {
+        moveTo(0f, 0f); lineTo(spinePx, skew); lineTo(spinePx + dx, skew + dy); lineTo(dx, dy); close()
+    }
+    fills.shader = android.graphics.LinearGradient(0f, skew + dy, 0f, 0f,
+        intArrayOf(android.graphics.Color.rgb(0xFE, 0xFD, 0xF8), android.graphics.Color.rgb(0xE3, 0xDF, 0xD3)),
+        floatArrayOf(0f, 1f), android.graphics.Shader.TileMode.CLAMP)
+    c.drawPath(top, fills)
+    fills.shader = null
+    stroke.color = android.graphics.Color.argb(71, 0x9A, 0x92, 0x7F); stroke.strokeWidth = 0.8f
+    c.drawPath(top, stroke)
+
+    // 书脊：米白底 + 右缘发丝线
+    fills.color = android.graphics.Color.rgb(0xF2, 0xF0, 0xE9)
+    c.drawRect(0f, 0f, spinePx, hPx, fills)
+    stroke.color = android.graphics.Color.argb(89, 0x9A, 0x92, 0x7F); stroke.strokeWidth = 1f
+    c.drawLine(spinePx - 0.5f, 0f, spinePx - 0.5f, hPx, stroke)
+
+    // 封面：矩阵压成平行四边形
+    val m = android.graphics.Matrix()
+    m.setValues(floatArrayOf(0.66f, 0f, spinePx, -0.30f, 1f, skew, 0f, 0f, 1f))
+    c.save(); c.concat(m)
+    val u = coverPx / 128f
+    val padX = 10f * u; val padTop = 9f * u
+    fills.shader = null; fills.color = android.graphics.Color.rgb(0xFE, 0xFD, 0xF8)
+    c.drawRect(0f, 0f, coverPx, hPx, fills)
+    stroke.color = android.graphics.Color.argb(56, 154, 146, 127); stroke.strokeWidth = 1f * u
+    c.drawRect(0.5f * u, 0.5f * u, coverPx - 0.5f * u, hPx - 0.5f * u, stroke)
+
+    val noLabel = String.format("%03d", no)
+    mono.textSize = 7f * u; mono.letterSpacing = 0.06f; mono.color = android.graphics.Color.rgb(0x8A, 0x85, 0x78)
+    c.drawText("NO." + noLabel, padX, padTop + 7f * u, mono)
+
+    val badgePaint = serifPlain
+    badgePaint.textSize = 7f * u; badgePaint.letterSpacing = 0.12f; badgePaint.color = android.graphics.Color.rgb(0x9A, 0x4A, 0x2F)
+    val badgeH = 7f * u * 1.5f + 2f * u
+    if (badge.isNotBlank()) {
+        val badgeW = badgePaint.measureText(badge) + 6f * u
+        val bx = coverPx - padX - badgeW
+        stroke.color = android.graphics.Color.argb(115, 154, 74, 47); stroke.strokeWidth = 1f * u
+        c.drawRoundRect(bx, padTop, bx + badgeW, padTop + badgeH, 2f * u, 2f * u, stroke)
+        c.drawText(badge, bx + 3f * u, padTop + badgeH / 2f + 7f * u * 0.36f, badgePaint)
+    }
+
+    val artX = padX; val artW = coverPx - 20f * u; val artH = artW * 166f / 118f; val artY = padTop + badgeH + 5f * u
+    fills.shader = android.graphics.LinearGradient(artX, artY, artX + artW * 0.375f, artY + artH * 0.927f,
+        intArrayOf(hslColor(hue.toFloat(), 0.46f, 0.74f), hslColor(hue + 24f, 0.44f, 0.56f), hslColor(hue + 48f, 0.42f, 0.40f)),
+        floatArrayOf(0f, 0.52f, 1f), android.graphics.Shader.TileMode.CLAMP)
+    c.drawRect(artX, artY, artX + artW, artY + artH, fills)
+    fills.shader = null
+    stroke.color = android.graphics.Color.argb(31, 43, 40, 34); stroke.strokeWidth = 1f * u
+    c.drawRect(artX, artY, artX + artW, artY + artH, stroke)
+
+    mono.textSize = 7f * u; mono.letterSpacing = 0.08f; mono.color = android.graphics.Color.argb(217, 255, 253, 246)
+    c.drawText("VOL.1", artX + 7f * u, artY + 15f * u, mono)
+
+    if (title.isNotBlank()) {
+        serif.textSize = 13.5f * u; serif.color = android.graphics.Color.rgb(0xFF, 0xFD, 0xF6)
+        serif.setShadowLayer(6f * u, 0f, 1f * u, android.graphics.Color.argb(115, 30, 25, 18))
+        val colX = artX + artW - 7f * u - 13.5f * u
+        var cy = artY + 8f * u + 13.5f * u * 0.92f
+        for (ch in title) {
+            if (cy > artY + artH - 12f * u) break
+            c.drawText(ch.toString(), colX, cy, serif)
+            cy += 13.5f * u * 1.32f
+        }
+        serif.clearShadowLayer()
+    }
+    if (coverAuthor.isNotBlank()) {
+        serifPlain.textSize = 8f * u; serifPlain.letterSpacing = 0.2f; serifPlain.color = android.graphics.Color.argb(235, 255, 253, 246)
+        serifPlain.setShadowLayer(4f * u, 0f, 1f * u, android.graphics.Color.argb(128, 30, 25, 18))
+        c.drawText(coverAuthor, artX + 7f * u, artY + artH - 6f * u, serifPlain)
+        serifPlain.clearShadowLayer(); serifPlain.letterSpacing = 0f
+    }
+    mono.textSize = 6.5f * u; mono.letterSpacing = 0.1f; mono.color = android.graphics.Color.rgb(0xA3, 0x9C, 0x8A)
+    val codeY = hPx - 8f * u
+    c.drawText(serial, padX, codeY, mono)
+    if (statusText.isNotBlank()) { val sw = mono.measureText(statusText); c.drawText(statusText, coverPx - padX - sw, codeY, mono) }
+    c.restore()
+
+    // 书脊竖排文字（原 Column 的等价）
+    val padV = with(density) { 7.dp.toPx() }
+    val spineCx = spinePx / 2f
+    val noShort = String.format("%02d", no)
+    val sp75 = with(density) { 7.5.sp.toPx() }
+    mono.letterSpacing = 0f; mono.textSize = sp75; mono.textAlign = android.graphics.Paint.Align.CENTER
+    mono.color = android.graphics.Color.rgb(0x9A, 0x92, 0x7E)
+    var ty = padV + sp75
+    c.drawText(noShort, spineCx, ty, mono)
+    ty += with(density) { 6.dp.toPx() }
+    if (title.isNotBlank()) {
+        val st = title.take(7) + (if (title.length > 7) "…" else "")
+        val sp10 = with(density) { 10.sp.toPx() }
+        val lh = with(density) { 11.5.sp.toPx() }
+        val tp = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            textAlign = android.graphics.Paint.Align.CENTER
+            color = android.graphics.Color.rgb(0x4A, 0x46, 0x3C)
+            textSize = sp10
+        }
+        var cy2 = ty + sp10 * 0.92f
+        var line = 0
+        for (ch in st) {
+            if (ch == '\n') continue
+            if (line >= 8) break
+            c.drawText(ch.toString(), spineCx, cy2, tp)
+            cy2 += lh; line++
+        }
+    }
+    val r = with(density) { 1.75.dp.toPx() }
+    fills.shader = null; fills.color = android.graphics.Color.rgb(0xB9, 0xB0, 0x9A)
+    c.drawCircle(spineCx, hPx - padV - r, r, fills)
+    return pic
 }
 
 
