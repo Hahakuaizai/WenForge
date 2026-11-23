@@ -261,7 +261,7 @@ fun ShelfScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "本地",
+                                "书架",
                                 style = TextStyle(
                                     fontSize = 30.sp,
                                     lineHeight = 36.sp,
@@ -365,16 +365,6 @@ fun ShelfScreen(
                         Box(Modifier.size(3.dp).background(InkBlack))
                     }
 
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "立体书架",
-                        style = TextStyle(
-                            fontSize = 21.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = InkBlack,
-                            letterSpacing = 0.5.sp
-                        )
-                    )
                     Spacer(Modifier.height(16.dp))
 
                     // 筛选行
