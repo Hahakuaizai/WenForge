@@ -1282,12 +1282,24 @@ private fun BookCarousel(
         // 绘制序按整数槽位算（跨槽才变），精确位置在图层里读实时 pos。
         // 每本书的封面/书脊/文字预录成一个 android Picture（矢量绘制命令缓存）。
         // 滑动时只在 draw 阶段把这些 Picture 平移贴上去，不重组、不重跑绘制逻辑。
-        val bookPics = remember(books, spine, cover, H) {
-            books.mapIndexed { idx, bk -> recordBookPicture(
-                title = bk.title, no = idx + 1, hue = bk.hue, badge = bk.badge,
-                coverAuthor = bk.coverAuthor, statusText = bk.statusText,
-                serial = "WK-${kotlin.math.abs(bk.id.hashCode()) % 100000000}",
-                spinePx = spine, coverPx = cover, hPx = H, density = density) }
+        val bookBmps = remember(books, spine, cover, H) {
+            books.mapIndexed { idx, bk ->
+                val pic = recordBookPicture(
+                    title = bk.title, no = idx + 1, hue = bk.hue, badge = bk.badge,
+                    coverAuthor = bk.coverAuthor, statusText = bk.statusText,
+                    serial = "WK-${kotlin.math.abs(bk.id.hashCode()) % 100000000}",
+                    spinePx = spine, coverPx = cover, hPx = H, density = density)
+                val bw = pic.width.coerceAtLeast(1)
+                val bh = pic.height.coerceAtLeast(1)
+                val bmp = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
+                android.graphics.Canvas(bmp).drawPicture(pic)
+                pic.close()
+                bmp
+            }
+        }
+        // 每本封面一次性光栅化成 Bitmap；滑动时只 drawBitmap 贴图（走 GPU 纹理），不再每帧重放矢量+文字
+        val bookPaint = remember {
+            android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG)
         }
         Canvas(Modifier.fillMaxWidth().height(boxH)) {
             val nc = drawContext.canvas.nativeCanvas
@@ -1297,7 +1309,7 @@ private fun BookCarousel(
                 .filter { kotlin.math.abs(relOfStatic(it, p, n)) <= rangeF + 1f }
                 .sortedBy { relOfStatic(it, p, n) }
             for (i in visOrder) {
-                val pic = bookPics[i]
+                val bmp = bookBmps[i]
                 val d = relOfStatic(i, p, n)
                 val ad = kotlin.math.abs(d)
                 var w = wave(ad)
@@ -1312,7 +1324,7 @@ private fun BookCarousel(
                 val lift = w * w * (3f - 2f * w)
                 val x = startX + d * pitch - pull * 0.66f + slide * 0.66f
                 val y = baseY + railY(d) + 0.30f * pull - 0.60f * H * lift + slide * -0.30f
-                nc.save(); nc.translate(x - 60f, y - (cover * 0.30f + 60f)); nc.drawPicture(pic); nc.restore()
+                nc.drawBitmap(bmp, x - 60f, y - (cover * 0.30f + 60f), bookPaint)
             }
         }
     }
