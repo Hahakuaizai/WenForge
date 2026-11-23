@@ -105,7 +105,16 @@ object BookScanner {
                 .onFailure { errs.add(root.name + "：" + (it.message ?: it.javaClass.simpleName)) }
         }
 
-        return out.values.sortedWith(
+        // MediaStore（媒体库）与目录遍历会拿到同一个文件：前者 key 是 content://uri，
+        // 后者是绝对路径，按 path/uri 去重合不掉，导致列表里同一文件出现两次。
+        // 这里按「文件名+大小」再合并一遍，优先保留带真实路径的那条（读取更稳）。
+        val merged = LinkedHashMap<String, FoundBook>()
+        out.values.forEach { fb ->
+            val dk = fb.name + "@" + fb.sizeBytes
+            val prev = merged[dk]
+            if (prev == null || (prev.path.isBlank() && fb.path.isNotBlank())) merged[dk] = fb
+        }
+        return merged.values.sortedWith(
             compareByDescending<FoundBook> { it.looksLikeNovel }
                 .thenByDescending { it.sizeBytes }
         )
