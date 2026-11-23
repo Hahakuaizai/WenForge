@@ -1967,6 +1967,8 @@ private fun ShelfSearch(
     onOpenHit: (kind: String, id: String, chapter: Int) -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    var mode by rememberSaveable { mutableStateOf("书名") }
+    val modes = listOf("书名", "作者", "标签", "ID", "书中内容")
     var hits by remember { mutableStateOf<List<SearchHit>>(emptyList()) }
     var running by remember { mutableStateOf(false) }
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
@@ -1976,7 +1978,7 @@ private fun ShelfSearch(
         focus.requestFocus()
     }
 
-    androidx.compose.runtime.LaunchedEffect(query) {
+    androidx.compose.runtime.LaunchedEffect(query, mode) {
         if (query.isBlank()) {
             hits = emptyList()
             running = false
@@ -1985,7 +1987,7 @@ private fun ShelfSearch(
         running = true
         kotlinx.coroutines.delay(220)
         hits = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            searchAll(vm, query.trim())
+            searchAll(vm, query.trim(), mode)
         }
         running = false
     }
@@ -2012,7 +2014,13 @@ private fun ShelfSearch(
                     Box {
                         if (query.isEmpty()) {
                             Text(
-                                "搜书名，或书里的内容",
+                                when (mode) {
+                                    "作者" -> "只搜索作者"
+                                    "标签" -> "只搜索标签（本地 / 网文 / 题材）"
+                                    "ID" -> "输入 WK 编号或书籍 ID"
+                                    "书中内容" -> "搜索书里的正文内容"
+                                    else -> "只搜索书名"
+                                },
                                 style = TextStyle(fontSize = 16.sp, color = InkGray)
                             )
                         }
@@ -2048,6 +2056,36 @@ private fun ShelfSearch(
                 .height(1.dp)
                 .background(HairLine)
         )
+
+        // 搜索维度切换（分段控件）
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            modes.forEach { m ->
+                val selected = m == mode
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) InkBlack else Color.White)
+                        .clickable { mode = m }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        m,
+                        style = TextStyle(
+                            fontSize = 12.5.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (selected) Color.White else InkGray
+                        )
+                    )
+                }
+            }
+        }
 
         when {
             query.isBlank() -> {
@@ -2099,52 +2137,58 @@ private fun ShelfSearch(
                         )
                     }
                     itemsIndexed(hits) { _, hit ->
-                        Column(
+                        Row(
                             Modifier
                                 .fillMaxWidth()
                                 .clickable {
                                     keyboard?.hide()
                                     onOpenHit(hit.kind, hit.bookId, hit.chapterIndex)
                                 }
-                                .padding(horizontal = 22.dp, vertical = 13.dp)
+                                .padding(horizontal = 18.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            val hue = (kotlin.math.abs(hit.bookId.hashCode()) % 360).toFloat()
+                            Box(
+                                Modifier
+                                    .size(48.dp, 62.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color.hsl(hue, 0.30f, 0.60f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    hit.bookTitle.take(2),
+                                    style = TextStyle(fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold),
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 2
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "WK-" + (kotlin.math.abs(hit.bookId.hashCode()) % 100000000),
+                                    style = TextStyle(fontSize = 10.sp, color = InkGray, letterSpacing = 0.5.sp)
+                                )
+                                Spacer(Modifier.height(2.dp))
                                 Text(
                                     hl(hit.bookTitle, query, Color(0xFF9A4A2F)),
-                                    style = TextStyle(
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = InkBlack
-                                    ),
+                                    style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = InkBlack),
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                if (hit.chapterIndex > 0) {
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        hl(hit.chapterTitle, query, Color(0xFF9A4A2F)),
-                                        style = TextStyle(fontSize = 11.sp, color = InkGray),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                            }
-                            if (hit.snippet.isNotBlank()) {
-                                Spacer(Modifier.height(5.dp))
+                                Spacer(Modifier.height(3.dp))
                                 Text(
-                                    hl(hit.snippet, query, Color(0xFF9A4A2F)),
-                                    style = TextStyle(fontSize = 12.sp, lineHeight = 18.sp, color = InkGray),
-                                    maxLines = 2,
+                                    hl(if (hit.snippet.isNotBlank()) hit.snippet else (if (hit.kind == "imported") "本地书籍" else "我的创作"), query, Color(0xFF9A4A2F)),
+                                    style = TextStyle(fontSize = 11.5.sp, color = InkGray),
+                                    maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
+                            Text("›", style = TextStyle(fontSize = 20.sp, color = InkGray))
                         }
                         Box(
                             Modifier
                                 .fillMaxWidth()
-                                .padding(start = 22.dp)
+                                .padding(start = 18.dp)
                                 .height(1.dp)
                                 .background(HairLine.copy(alpha = 0.6f))
                         )
@@ -2156,13 +2200,39 @@ private fun ShelfSearch(
 }
 
 /** 书名 + 正文全文搜索，结果最多 80 条 */
-private fun searchAll(vm: AppViewModel, q: String): List<SearchHit> {
+private fun searchAll(vm: AppViewModel, q: String, mode: String): List<SearchHit> {
     val out = mutableListOf<SearchHit>()
     val needle = q.lowercase()
 
     // 后台保存线程可能在改这些集合，先拷一份快照再遍历，避免 ConcurrentModificationException
     val projects = vm.data.projects.toList()
     val books = vm.data.importedBooks.toList()
+
+    // 书级维度：书名 / 作者 / 标签 / ID（命中整本，不钻正文）
+    if (mode != "书中内容") {
+        fun serialOf(id: String) = "WK-" + (kotlin.math.abs(id.hashCode()) % 100000000)
+        projects.forEach { p ->
+            val ok = when (mode) {
+                "书名" -> p.title.lowercase().contains(needle)
+                "标签" -> p.genre.lowercase().contains(needle)
+                "ID" -> serialOf(p.id).lowercase().contains(needle) || p.id.lowercase().contains(needle)
+                else -> false
+            }
+            if (ok) out.add(SearchHit("novel", p.id, p.title, 0, "", ""))
+        }
+        books.forEach { b ->
+            val typeLabel = if (b.origin == "crawl") "网文" else "本地书籍"
+            val ok = when (mode) {
+                "书名" -> b.title.lowercase().contains(needle)
+                "作者" -> b.author.lowercase().contains(needle)
+                "标签" -> typeLabel.contains(needle)
+                "ID" -> serialOf(b.id).lowercase().contains(needle) || b.id.lowercase().contains(needle)
+                else -> false
+            }
+            if (ok) out.add(SearchHit("imported", b.id, b.title, 0, "", "作者：" + (b.author.ifBlank { "—" }) + " · " + typeLabel))
+        }
+        return out
+    }
 
     projects.forEach { p ->
         if (p.title.lowercase().contains(needle)) {
