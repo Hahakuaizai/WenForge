@@ -119,13 +119,23 @@ fun CardRevealPage(
     }
 
     val density = androidx.compose.ui.platform.LocalDensity.current
-    BoxWithConstraints(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    BoxWithConstraints(modifier.fillMaxSize()) {
         val w = constraints.maxWidth.toFloat()
         val h = constraints.maxHeight.toFloat()
 
+        // 底衬：开始时透明，让书架露着；随色块长大逐渐不透明，
+        // 长满那刻正好接住内容，不会在交界处闪一帧白。
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = grow.value.coerceIn(0f, 1f) }
+                .background(MaterialTheme.colorScheme.background)
+        )
+
         if (origin != null && grow.value < 1f) {
             // 起点矩形 → 全屏矩形，按进度插值
-            val t = grow.value
+            // 弹簧会过冲超过 1，这里夹住，免得色块瞬间跑到屏幕外
+            val t = grow.value.coerceIn(0f, 1f)
             val l = origin.left + (0f - origin.left) * t
             val tp = origin.top + (0f - origin.top) * t
             val ww = origin.width + (w - origin.width) * t
@@ -160,8 +170,7 @@ fun CardRevealPage(
 fun Modifier.staggerReveal(
     index: Int,
     step: Long = 35L,
-    distanceDp: Float = 12f,
-    durationMs: Int = 320
+    distanceDp: Float = 12f
 ): Modifier = composed {
     val p = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
