@@ -214,13 +214,13 @@ private fun BottomBar(
                 dampingRatio = 0.88f,
                 stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
             )
-            kotlinx.coroutines.coroutineScope {
+            coroutineScope {
                 if (forward) {
-                    kotlinx.coroutines.launch { rightPos.animateTo(selected.toFloat(), frontSpec) }
-                    kotlinx.coroutines.launch { leftPos.animateTo(selected.toFloat(), backSpec) }
+                    launch { rightPos.animateTo(selected.toFloat(), frontSpec) }
+                    launch { leftPos.animateTo(selected.toFloat(), backSpec) }
                 } else {
-                    kotlinx.coroutines.launch { leftPos.animateTo(selected.toFloat(), frontSpec) }
-                    kotlinx.coroutines.launch { rightPos.animateTo(selected.toFloat(), backSpec) }
+                    launch { leftPos.animateTo(selected.toFloat(), frontSpec) }
+                    launch { rightPos.animateTo(selected.toFloat(), backSpec) }
                 }
             }
         }
