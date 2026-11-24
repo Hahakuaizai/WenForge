@@ -2169,7 +2169,7 @@ private fun buildSearchCells(vm: AppViewModel, q: String, mode: String): List<Se
 private fun SearchCoverCell(c: SearchCell, onClick: () -> Unit) {
     val palette = longArrayOf(0xFF8E7CC3, 0xFF6AA84F, 0xFFC27BA0, 0xFFE69138, 0xFF674EA7, 0xFF45818E, 0xFFA64D79, 0xFFB45F06)
     val col = Color(palette[((c.hue % palette.size) + palette.size) % palette.size])
-    Column(Modifier.clickable { onClick() }) {
+    Column(Modifier.cardRevealSource(6f, col) { onClick() }) {
         Box(
             Modifier.fillMaxWidth().height(150.dp)
                 .clip(RoundedCornerShape(6.dp))

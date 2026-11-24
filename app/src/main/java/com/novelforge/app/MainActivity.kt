@@ -48,6 +48,10 @@ import com.novelforge.app.ui.StatsScreen
 import com.novelforge.app.ui.StorageScreen
 import com.novelforge.app.ui.UpdatesScreen
 import com.novelforge.app.ui.WorkbenchScreen
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import com.novelforge.app.ui.CardRevealPage
+import com.novelforge.app.ui.PredictiveBackContainer
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -184,15 +188,30 @@ class MainActivity : ComponentActivity() {
                                 navArgument("kind") { type = NavType.StringType },
                                 navArgument("id") { type = NavType.StringType },
                                 navArgument("chapter") { type = NavType.StringType }
-                            )
+                            ),
+                            // 卡片转整页自己接管转场，别叠默认的淡入缩放
+                            enterTransition = { EnterTransition.None },
+                            exitTransition = { ExitTransition.None },
+                            popEnterTransition = { EnterTransition.None },
+                            popExitTransition = {
+                                fadeOut(tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                                    androidx.compose.animation.scaleOut(
+                                        tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                                        targetScale = 0.94f
+                                    )
+                            }
                         ) { entry ->
-                            ReaderScreen(
-                                vm = vm,
-                                kind = entry.arguments?.getString("kind") ?: "imported",
-                                bookId = entry.arguments?.getString("id").orEmpty(),
-                                startChapter = entry.arguments?.getString("chapter")?.toIntOrNull() ?: 0,
-                                onBack = { nav.popBackStack() }
-                            )
+                            CardRevealPage {
+                                PredictiveBackContainer(onBack = { nav.popBackStack() }) {
+                                    ReaderScreen(
+                                        vm = vm,
+                                        kind = entry.arguments?.getString("kind") ?: "imported",
+                                        bookId = entry.arguments?.getString("id").orEmpty(),
+                                        startChapter = entry.arguments?.getString("chapter")?.toIntOrNull() ?: 0,
+                                        onBack = { nav.popBackStack() }
+                                    )
+                                }
+                            }
                         }
                         composable("scan") {
                             ScanImportScreen(

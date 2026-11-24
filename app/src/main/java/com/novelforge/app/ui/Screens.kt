@@ -3678,8 +3678,8 @@ fun ImportedBookScreen(
                     }
                 }
             }
-            items(book.chapters, key = { it.index }) { ch ->
-                Column {
+            itemsIndexed(book.chapters, key = { _, ch -> ch.index }) { idx, ch ->
+                Column(Modifier.staggerReveal(idx)) {
                     Text(ch.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     Text(ch.content, style = MaterialTheme.typography.bodyLarge)

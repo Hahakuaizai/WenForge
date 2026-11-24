@@ -49,6 +49,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.BoxWithConstraints
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.coroutineScope
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 
 private data class TabSpec(val label: String, val icon: ImageVector)
 
@@ -98,17 +105,19 @@ fun MainTabsScreen(
             androidx.compose.animation.AnimatedContent(
                 targetState = tab,
                 transitionSpec = {
+                    // 页面内容沿点击方向轻推淡入：新页从点击方向那一侧滑进来一点，
+                    // 旧页往反方向退一点点同时淡出，幅度都很小，只做「推一下」的感觉。
                     val dir = if (forward) 1 else -1
                     (androidx.compose.animation.fadeIn(
-                        androidx.compose.animation.core.tween(260, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                    ) + androidx.compose.animation.scaleIn(
-                        androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing), initialScale = 0.95f
-                    )) togetherWith
+                        androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                    ) + androidx.compose.animation.slideInHorizontally(
+                        androidx.compose.animation.core.tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                    ) { full -> dir * (full / 14) }) togetherWith
                         (androidx.compose.animation.fadeOut(
-                            androidx.compose.animation.core.tween(180, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                        ) + androidx.compose.animation.scaleOut(
-                            androidx.compose.animation.core.tween(260, easing = androidx.compose.animation.core.FastOutSlowInEasing), targetScale = 1.02f
-                        ))
+                            androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                        ) + androidx.compose.animation.slideOutHorizontally(
+                            androidx.compose.animation.core.tween(300, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                        ) { full -> -dir * (full / 22) })
                 },
                 label = "tabSwitch",
                 modifier = Modifier.fillMaxSize()
@@ -162,69 +171,135 @@ fun MainTabsScreen(
     }
 }
 
-/** 悬浮胶囊式底栏，参考轻小说文库那种贴底四个入口 */
+/** 悬浮胶囊式底栏：选中胶囊像水滴一样流过去
+ *  —— 前沿先到、后沿慢半拍，中途被拉长并略变扁，最后带轻微回弹停稳。 */
 @Composable
 private fun BottomBar(
     selected: Int,
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
+    val appCtx = androidx.compose.ui.platform.LocalContext.current
+    val inset = 12.dp
+    val pillH = 28.dp
+    val pillTop = 2.dp
+
+    androidx.compose.foundation.layout.BoxWithConstraints(
         modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 18.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(26.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 6.dp, vertical = 8.dp)
     ) {
-        val appCtx = androidx.compose.ui.platform.LocalContext.current
-        tabs.forEachIndexed { i, spec ->
-            val sel = i == selected
-            val scale by animateFloatAsState(
-                targetValue = if (sel) 1f else 0.94f,
-                animationSpec = tween(220),
-                label = "tabScale"
+        val tabW = maxWidth / tabs.size
+
+        // 胶囊左右两条边各自一条动画：前进方向那条边先冲，另一条慢半拍跟上，
+        // 于是中途宽度被拉开 —— 这就是「水滴被拉长」的来源。
+        val leftPos = remember { androidx.compose.animation.core.Animatable(selected.toFloat()) }
+        val rightPos = remember { androidx.compose.animation.core.Animatable(selected.toFloat()) }
+        var prevTabIdx by remember { mutableIntStateOf(selected) }
+
+        androidx.compose.runtime.LaunchedEffect(selected) {
+            val from = prevTabIdx
+            prevTabIdx = selected
+            if (from == selected) return@LaunchedEffect
+            val forward = selected > from
+            val frontSpec = androidx.compose.animation.core.spring<Float>(
+                dampingRatio = 0.70f,
+                stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
             )
-            Column(
-                Modifier
-                    .weight(1f)
-                    .graphicsLayer { scaleX = scale; scaleY = scale }
-                    .clip(RoundedCornerShape(20.dp))
-                    .clickable {
-                        if (!sel) Haptics.select(appCtx)
-                        onSelect(i)
-                    }
-                    .padding(vertical = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            if (sel) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                            else Color.Transparent
-                        )
-                        .padding(horizontal = 14.dp, vertical = 4.dp)
-                ) {
-                    Icon(
-                        spec.icon,
-                        contentDescription = spec.label,
-                        modifier = Modifier.size(20.dp),
-                        tint = if (sel) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            val backSpec = androidx.compose.animation.core.spring<Float>(
+                dampingRatio = 0.88f,
+                stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+            )
+            kotlinx.coroutines.coroutineScope {
+                if (forward) {
+                    kotlinx.coroutines.launch { rightPos.animateTo(selected.toFloat(), frontSpec) }
+                    kotlinx.coroutines.launch { leftPos.animateTo(selected.toFloat(), backSpec) }
+                } else {
+                    kotlinx.coroutines.launch { leftPos.animateTo(selected.toFloat(), frontSpec) }
+                    kotlinx.coroutines.launch { rightPos.animateTo(selected.toFloat(), backSpec) }
                 }
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    spec.label,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (sel) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            }
+        }
+
+        val l = leftPos.value
+        val r = rightPos.value
+        val pillLeft = tabW * l + inset
+        val pillW = ((tabW * (r + 1f) - inset) - pillLeft).coerceAtLeast(0.dp)
+        val baseW = (tabW - inset * 2).value
+        val stretch = if (baseW > 0.01f) (pillW.value / baseW) else 1f
+        // 拉伸越多压得越扁，模拟液体体积守恒
+        val squash = (1f - 0.22f * (stretch - 1f)).coerceIn(0.72f, 1f)
+        val pillColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+
+        Box(Modifier.fillMaxWidth()) {
+            Box(
+                Modifier
+                    .offset(x = pillLeft, y = pillTop + (pillH * (1f - squash)) / 2)
+                    .width(pillW)
+                    .height(pillH * squash)
+                    .clip(RoundedCornerShape(pillH * squash / 2))
+                    .background(pillColor)
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                tabs.forEachIndexed { i, spec ->
+                    val sel = i == selected
+                    // 新选中的图标：先缩一下再弹回
+                    val iconScale = remember { androidx.compose.animation.core.Animatable(1f) }
+                    androidx.compose.runtime.LaunchedEffect(sel) {
+                        if (sel) {
+                            iconScale.snapTo(0.78f)
+                            iconScale.animateTo(
+                                1f,
+                                androidx.compose.animation.core.spring(
+                                    dampingRatio = 0.46f,
+                                    stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
+                                )
+                            )
+                        }
+                    }
+                    val tint by androidx.compose.animation.animateColorAsState(
+                        targetValue = if (sel) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        animationSpec = tween(240),
+                        label = "tabTint"
+                    )
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable {
+                                if (!sel) Haptics.select(appCtx)
+                                onSelect(i)
+                            }
+                            .padding(vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Box(Modifier.height(20.dp), contentAlignment = Alignment.Center) {
+                            Icon(
+                                spec.icon,
+                                contentDescription = spec.label,
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .graphicsLayer {
+                                        scaleX = iconScale.value
+                                        scaleY = iconScale.value
+                                    },
+                                tint = tint
+                            )
+                        }
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            spec.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                            color = tint
+                        )
+                    }
+                }
             }
         }
     }
