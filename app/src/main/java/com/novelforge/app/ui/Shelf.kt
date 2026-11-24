@@ -1357,7 +1357,19 @@ private fun BookCarousel(
     val curIndex by remember(n) { derivedStateOf { ((pos.roundToInt() % n) + n) % n } }
     val cur = books[curIndex]
     Spacer(Modifier.height(4.dp))
-    Column(Modifier.padding(horizontal = 24.dp)) {
+    // 书名这一整块就是「打开这本书」的卡片：
+    // 点它记下矩形，阅读页照着长出来，跟搜索结果的卡片转场同一套
+    val coverPalette = longArrayOf(
+        0xFF8E7CC3, 0xFF6AA84F, 0xFFC27BA0, 0xFFE69138,
+        0xFF674EA7, 0xFF45818E, 0xFFA64D79, 0xFFB45F06
+    )
+    val curCol = Color(coverPalette[((kotlin.math.abs(cur.id.hashCode()) % coverPalette.size) + coverPalette.size) % coverPalette.size])
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .cardRevealSource(10f, curCol) { onOpen(cur) }
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "《${cur.title}》",
